@@ -1,0 +1,5 @@
+# These requirements should be installed only for local testing.
+# The CD/CD pipeline will install these requriements when it runs unit 
+# tests and coverage but they will not be pushed to the production environment.
+pytest==8.3.2     # Unit testing
+pytest-cov==5.0.0 # Test coverage
