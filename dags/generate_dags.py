@@ -1,11 +1,15 @@
 import json
 import logging
 import os
+import re
+
 from utils.global_variables import OUTPUT_DIR
 from airflow.utils.dates import days_ago
 from airflow.decorators import dag, task
 from datetime import timedelta
 from utils.hydroserver_airflow_connection import HydroServerAirflowConnection
+from utils.get_etl_classes import get_extractor, get_transformer, get_loader
+from airflow.utils.task_group import TaskGroup
 
 
 def read_datasources_from_file(uid):
@@ -28,8 +32,13 @@ default_args = {
 }
 
 
-def generate_dag(ds):
-    dag_id = f"etl_{ds['uid']}"
+def sanitize_name(name: str) -> str:
+    # Replace any non-alphanumeric, non-dash/underscore/dot with underscore
+    return re.sub(r"[^a-zA-Z0-9_.-]", "_", name)
+
+
+def generate_dag(data_source):
+    dag_id = f"datasource_{sanitize_name(data_source['name'])}"
 
     @dag(
         dag_id=dag_id,
@@ -40,11 +49,79 @@ def generate_dag(ds):
         tags=["hydroserver", "monitoring"],
     )
     def run_etl():
-        @task()
-        def log_name():
-            print(f"hello world. Logging datasource with name: {ds['name']}")
+        import pandas as pd
 
-        log_name()
+        print(f"Starting run_etl for datasource: {data_source['name']}")
+        # settings = data_source["settings"]
+
+        # extractor_settings = settings["extractor"]
+        # extractor = get_extractor(extractor_settings)
+
+        # transformer_settings = settings["transformer"]
+        # transformer = get_transformer(transformer_settings)
+
+        # loader_settings = settings["loader"]
+        # loader = get_loader(loader_settings)
+
+        # payloads = settings["payloads"]
+
+        @task()
+        def get_data_requirements(payload):
+            # return loader.get_data_requirements(payload)
+            return "loader.get_data_requirements(payload)"
+
+        @task()
+        def prepare_extractor_params(data_requirements):
+            # extractor.prepare_params(data_requirements)
+            return "extractor.prepare_params(data_requirements)"
+
+        @task()
+        def extract():
+            return "extracted"
+            # data = extractor.extract()
+            # if data is None or (isinstance(data, pd.DataFrame) and data.empty):
+            #     logging.warning(
+            #         f"No data was returned from the extractor. Ending ETL run."
+            #     )
+            #     return
+            # else:
+            #     logging.info(f"Successfully extracted data.")
+            #     return data
+
+        @task()
+        def transform(extracted_data):
+            return f"transformed {extracted_data}"
+            # data = transformer.transform(extracted_data)
+            # if data is None or (isinstance(data, pd.DataFrame) and data.empty):
+            #     logging.warning(f"No data returned from the transformer. Ending run.")
+            #     return
+            # else:
+            #     logging.info(f"Successfully transformed data. {data}")
+            #     return data
+
+        @task()
+        def load(transformed_data, payload_settings):
+            # TODO: I think the transformer should just create a pandas dataframe with the datastream IDs so the loader shouldn't need payload_settings
+            # loader.load(transformed_data, payload_settings)
+            logging.info("data is loaded!")
+            return f"loader.load({transformed_data}, {payload_settings})"
+
+        for payload in ["CSV_1", "CSV_2", "CSV_3", "CSV_4", "CSV_5"]:
+            sanitized_name = sanitize_name(payload)
+            with TaskGroup(group_id=f"{sanitized_name}") as etl_group:
+                get_reqs = get_data_requirements.override(
+                    task_id=f"get_data_requirements"
+                )(payload)
+                prep = prepare_extractor_params.override(
+                    task_id=f"prepare_extractor_params"
+                )(get_reqs)
+                ext = extract.override(task_id=f"extract")()
+                trans = transform.override(task_id=f"transform")(ext)
+                load_task = load.override(task_id=f"load")(trans, payload)
+
+                get_reqs >> prep >> ext >> trans >> load_task
+
+        # 4. (Not here) update hydroserverpy functions to use the parameter format defined above.
 
     return run_etl()
 
