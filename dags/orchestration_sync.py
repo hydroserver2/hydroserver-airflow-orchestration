@@ -1,108 +1,10 @@
 import json
 import os
-import uuid
-from airflow import DAG
 from airflow.hooks.base import BaseHook
 from airflow.utils.dates import days_ago
 from airflow.decorators import dag, task
 from datetime import timedelta
-import hydroserverpy
-import logging
-
-
-class HydroServerOrchestrator:
-    """
-    Scheduler class to ensure orchestration system exists,
-    fetch datasources, and generate/update Airflow DAGs for each.
-    """
-
-    def __init__(self, conn_id: str):
-        self.OUTPUT_DIR = "/opt/airflow/dags/datasources"
-        self.airflow_connection = BaseHook.get_connection(conn_id)
-        self.api = self.connect_to_hydroserver()
-        self.orchestration_system = self.get_or_create_orchestration_system()
-        self.data_sources = self.get_datasources()
-        self.save_datasources_to_file()
-
-    def connect_to_hydroserver(self):
-        """Uses connection settings to register app on HydroServer"""
-
-        conn = self.airflow_connection
-        scheme = conn.conn_type or "http"
-        host = conn.host
-        port = f":{conn.port}" if conn.port else ""
-        base = f"{scheme}://{host}{port}".rstrip("/")
-
-        try:
-            return hydroserverpy.HydroServer(
-                host=base,
-                email=conn.login,
-                password=conn.password,
-            )
-        except Exception as e:
-            raise RuntimeError(f"Failed to connect to HydroServer: {e}")
-
-    def get_or_create_orchestration_system(self):
-        extras = self.airflow_connection.extra_dejson
-        workspace_name = extras.get("workspace_name")
-        orchestration_name = extras.get("orchestration_system_name")
-
-        workspaces = self.api.workspaces.list(associated_only=True)
-        workspace = next(
-            (w for w in workspaces if str(w.name) == str(workspace_name)), None
-        )
-        if not workspace:
-            raise RuntimeError(f"Workspace {workspace_name!r} not found")
-
-        orchestration_systems = self.api.orchestrationsystems.list(workspace=workspace)
-        orchestration_system = next(
-            (o for o in orchestration_systems if o.name == orchestration_name),
-            None,
-        )
-
-        if not orchestration_system:
-            try:
-                orchestration_system = self.api.orchestrationsystems.create(
-                    name=orchestration_name,
-                    workspace=workspace,
-                    orchestration_system_type="ETL",
-                )
-            except Exception as e:
-                raise RuntimeError("Failed to register Airflow orchestration system.")
-
-        return orchestration_system
-
-    def get_datasources(self):
-        return self.api.datasources.list(orchestration_system=self.orchestration_system)
-
-    def save_datasources_to_file(self):
-        uid = str(self.orchestration_system.uid)
-        os.makedirs(self.OUTPUT_DIR, exist_ok=True)
-        path = os.path.join(self.OUTPUT_DIR, f"{uid}.json")
-        try:
-            with open(path, "w") as f:
-                json.dump(
-                    [self._stringify_uuids(ds.dict()) for ds in self.data_sources],
-                    f,
-                    indent=2,
-                )
-            logging.info(f"Saved {len(self.data_sources)} datasources to {path}")
-        except Exception as e:
-            logging.error(f"Failed to write datasource file {path}: {e}")
-            raise
-
-    @staticmethod
-    def _stringify_uuids(obj):
-        if isinstance(obj, dict):
-            return {
-                k: HydroServerOrchestrator._stringify_uuids(v) for k, v in obj.items()
-            }
-        elif isinstance(obj, list):
-            return [HydroServerOrchestrator._stringify_uuids(i) for i in obj]
-        elif isinstance(obj, uuid.UUID):
-            return str(obj)
-        else:
-            return obj
+from utils.hydroserver_airflow_connection import HydroServerAirflowConnection
 
 
 default_args = {
@@ -140,9 +42,10 @@ def orchestration_sync():
     @task()
     def sync_hydroserver_orchestration():
         # TODO: loop through connections and create an orchestrator for each
-        orchestrator = HydroServerOrchestrator(
+        hs_connection = HydroServerAirflowConnection(
             "local_hydroserver_for_daniels_workspace"
         )
+        hs_connection.save_datasources_to_file()
 
     sync_hydroserver_orchestration()
 
