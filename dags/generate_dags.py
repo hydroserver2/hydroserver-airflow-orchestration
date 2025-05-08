@@ -1,3 +1,4 @@
+from datetime import timedelta, datetime
 import json
 import logging
 import os
@@ -6,7 +7,6 @@ import re
 from utils.global_variables import OUTPUT_DIR
 from airflow.utils.dates import days_ago
 from airflow.decorators import dag, task
-from datetime import timedelta
 from utils.hydroserver_airflow_connection import HydroServerAirflowConnection
 from utils.get_etl_classes import get_extractor, get_transformer, get_loader
 from airflow.utils.task_group import TaskGroup
@@ -41,22 +41,42 @@ default_args = {
 
 
 def sanitize_name(name: str) -> str:
-    # Replace any non-alphanumeric, non-dash/underscore/dot with underscore
+    """
+    Airflow IDs require alphanumeric or -_ characters only in ids.
+    """
     return re.sub(r"[^a-zA-Z0-9_-]", "_", name)
 
 
 def generate_dag(data_source):
+
     dag_id = f"datasource_{sanitize_name(data_source['name'])}"
 
     # TODO: schedule
+    cron = data_source.get("crontab")
+    if cron:
+        schedule = cron
+    else:
+        interval = data_source.get("interval", 1)
+        unit     = data_source.get("interval_units", "minutes")
+        schedule = timedelta(**{unit: interval})
+
+    start_ts = data_source.get("start_time")
+    start_dt = datetime.fromisoformat(start_ts) if start_ts else days_ago(1)
+
+    end_ts = data_source.get("end_time")
+    end_dt = datetime.fromisoformat(end_ts) if end_ts else None
+
+    is_paused = bool(data_source.get("paused", False))
 
     @dag(
         dag_id=dag_id,
         default_args=default_args,
-        start_date=days_ago(1),
-        schedule_interval=timedelta(minutes=5),
+        start_date=start_dt,
+        end_date=end_dt,
+        schedule_interval=schedule,
         catchup=False,
         tags=["hydroserver", "monitoring"],
+        is_paused_upon_creation=is_paused,
     )
     def run_etl():
         import pandas as pd
