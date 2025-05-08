@@ -1,8 +1,10 @@
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, timezone
 import json
 import logging
 import os
 import re
+
+from hydroserverpy import HydroServer
 
 from utils.global_variables import OUTPUT_DIR
 from airflow.utils.dates import days_ago
@@ -108,31 +110,67 @@ def generate_dag(data_source):
         def prepare_extractor_params(data_requirements):
             extractor.prepare_params(data_requirements)
 
-        @task()
+        @task(multiple_outputs=True)
         def extract_transform_load(payload):
-            logging.info(f'starting extraction for {data_source['name']}')
-            logging.info(f'starting extraction for {extractor_settings}')
-    
-            extracted_data = extractor.extract()
-            if extracted_data is None or (isinstance(extracted_data, pd.DataFrame) and extracted_data.empty):
-                logging.warning(
-                    f"No data was returned from the extractor. Ending ETL run."
-                )
-                return
-            else:
-                logging.info(f"Extract completed.")
+            try:
+                logging.info(f'starting extraction for {data_source['name']}')
+                logging.info(f'starting extraction for {extractor_settings}')
+        
+                extracted_data = extractor.extract()
+                if extracted_data is None or (isinstance(extracted_data, pd.DataFrame) and extracted_data.empty):
+                    logging.warning(
+                        f"No data was returned from the extractor. Ending ETL run."
+                    )
+                    return
+                else:
+                    logging.info(f"Extract completed.")
 
-            logging.info(f'starting transformation for {settings}')
-            transformed_data = transformer.transform(extracted_data, payload['mappings'])
-            if transformed_data is None or (isinstance(transformed_data, pd.DataFrame) and transformed_data.empty):
-                logging.warning(f"No data returned from the transformer. Ending run.")
-                return
+                logging.info(f'starting transformation for {settings}')
+                transformed_data = transformer.transform(extracted_data, payload['mappings'])
+                if transformed_data is None or (isinstance(transformed_data, pd.DataFrame) and transformed_data.empty):
+                    logging.warning(f"No data returned from the transformer. Ending run.")
+                    return
+                else:
+                    logging.info(f"Transform completed.")
+                
+                loader.load(transformed_data, payload)
+                logging.info("load completed.")
+                return {"success": True, "message": "OK"}
+            except Exception as err:
+                return {"success": False, "message": str(err)}
+        
+        @task()
+        def update_data_source_status(success: bool, message: str):
+            import croniter
+            # 1) reconnect to HydroServer
+            conn = BaseHook.get_connection("local_hydroserver_for_daniels_workspace")
+            scheme = conn.conn_type or "http"
+            host   = conn.host
+            port   = f":{conn.port}" if conn.port else ""
+            base   = f"{scheme}://{host}{port}".rstrip("/")
+            service = HydroServer(host=base, email=conn.login, password=conn.password)
+
+            # 2) compute next_run exactly like HydroServerETLCSV._update_data_source
+            if data_source.get("crontab"):
+                next_run = croniter.croniter(
+                    data_source["crontab"], 
+                    datetime.now(timezone.utc)
+                ).get_next(datetime)
+            elif data_source.get("interval") and data_source.get("interval_units"):
+                next_run = datetime.now(timezone.utc) + timedelta(
+                    **{ data_source["interval_units"]: data_source["interval"] }
+                )
             else:
-                logging.info(f"Transform completed.")
-            
-            loader.load(transformed_data, payload)
-            logging.info("load completed.")
-            
+                next_run = None
+
+            # 3) push the update
+            service.datasources.update(
+                uid=data_source["uid"],
+                last_run=datetime.now(timezone.utc).isoformat(),
+                last_run_successful=success,
+                last_run_message=message,
+                next_run=next_run.isoformat() if next_run else None
+            )
 
         # @task()
         # def transform(extracted_data):
@@ -162,9 +200,12 @@ def generate_dag(data_source):
                 etl = extract_transform_load.override(
                     task_id=f"extract_transform_load"
                 )(payload)
+                status = update_data_source_status.override(
+                    task_id=f"update_data_source_status"
+                )(etl['success'],etl['message'])
 
                 # get_reqs >> prep >> ext >> trans >> load_task
-                get_requirements >> prep >> etl
+                get_requirements >> prep >> etl >> status
         # 4. (Not here) update hydroserverpy functions to use the parameter format defined above.
 
     return run_etl()

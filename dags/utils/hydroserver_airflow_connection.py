@@ -1,3 +1,4 @@
+from datetime import datetime
 import json
 import os
 import uuid
@@ -75,12 +76,23 @@ class HydroServerAirflowConnection:
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         path = os.path.join(OUTPUT_DIR, f"{uid}.json")
         try:
+            raw = [ds.dict() for ds in self.data_sources]
+
+            def clean(obj):
+                if isinstance(obj, dict):
+                    return {k: clean(v) for k, v in obj.items()}
+                if isinstance(obj, list):
+                    return [clean(v) for v in obj]
+                if isinstance(obj, uuid.UUID):
+                    return str(obj)
+                if isinstance(obj, datetime):
+                    return obj.isoformat()
+                return obj
+
+            cleaned = [clean(ds) for ds in raw]
+
             with open(path, "w") as f:
-                json.dump(
-                    [stringify_uuids(ds.dict()) for ds in self.data_sources],
-                    f,
-                    indent=2,
-                )
+                json.dump(cleaned, f, indent=2)
             logging.info(f"Saved {len(self.data_sources)} datasources to {path}")
         except Exception as e:
             logging.error(f"Failed to write datasource file {path}: {e}")
