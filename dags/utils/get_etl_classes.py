@@ -17,7 +17,7 @@ def get_extractor(settings: dict):
 
 
 def get_transformer(settings: dict):
-    transformer_map = {"json": JSONTransformer, "csv": CSVTransformer}
+    transformer_map = {"JSON": JSONTransformer, "CSV": CSVTransformer}
     transformer_type = settings["type"]
     cls = transformer_map.get(transformer_type)
     if cls is None:
@@ -26,7 +26,7 @@ def get_transformer(settings: dict):
 
 
 def get_loader(settings: dict):
-    loader_map = {"hydroserver": HydroServerLoader}
+    loader_map = {"HydroServer": HydroServerLoader}
     loader_type = settings["type"]
     cls = loader_map.get(loader_type)
     if cls is None:

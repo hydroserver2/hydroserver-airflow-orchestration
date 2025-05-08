@@ -10,6 +10,8 @@ from datetime import timedelta
 from utils.hydroserver_airflow_connection import HydroServerAirflowConnection
 from utils.get_etl_classes import get_extractor, get_transformer, get_loader
 from airflow.utils.task_group import TaskGroup
+from hydroserverpy.etl import HydroServerLoader
+from airflow.hooks.base import BaseHook
 
 
 def read_datasources_from_file(uid):
@@ -18,6 +20,12 @@ def read_datasources_from_file(uid):
     try:
         with open(path, "r") as f:
             datasources = json.load(f)
+        
+        for ds in datasources:
+            ds["name"] = sanitize_name(ds["name"])
+            for payload in ds.get("settings", {}).get("payloads", []):
+                payload["name"] = sanitize_name(payload.get("name"))
+
         return datasources
     except Exception as e:
         logging.error(f"Failed to write datasource file {path}: {e}")
@@ -34,11 +42,13 @@ default_args = {
 
 def sanitize_name(name: str) -> str:
     # Replace any non-alphanumeric, non-dash/underscore/dot with underscore
-    return re.sub(r"[^a-zA-Z0-9_.-]", "_", name)
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", name)
 
 
 def generate_dag(data_source):
     dag_id = f"datasource_{sanitize_name(data_source['name'])}"
+
+    # TODO: schedule
 
     @dag(
         dag_id=dag_id,
@@ -50,77 +60,91 @@ def generate_dag(data_source):
     )
     def run_etl():
         import pandas as pd
+        settings = data_source["settings"]
 
-        print(f"Starting run_etl for datasource: {data_source['name']}")
-        # settings = data_source["settings"]
+        extractor_settings = settings["extractor"]
+        extractor = get_extractor(extractor_settings)
 
-        # extractor_settings = settings["extractor"]
-        # extractor = get_extractor(extractor_settings)
+        transformer_settings = settings["transformer"]
+        transformer = get_transformer(transformer_settings)
 
-        # transformer_settings = settings["transformer"]
-        # transformer = get_transformer(transformer_settings)
-
-        # loader_settings = settings["loader"]
+        loader_settings = settings["loader"]
+        if loader_settings['type'] == 'HydroServer':
+            conn = BaseHook.get_connection("local_hydroserver_for_daniels_workspace")
+            scheme = conn.conn_type or "http"
+            host = conn.host
+            port = f":{conn.port}" if conn.port else ""
+            base = f"{scheme}://{host}{port}".rstrip("/")
+            loader = HydroServerLoader(host=base, email=conn.login, password=conn.password)
         # loader = get_loader(loader_settings)
 
-        # payloads = settings["payloads"]
+        payloads = settings["payloads"]
 
         @task()
         def get_data_requirements(payload):
-            # return loader.get_data_requirements(payload)
-            return "loader.get_data_requirements(payload)"
+            return loader.get_data_requirements(payload['mappings'])
 
         @task()
         def prepare_extractor_params(data_requirements):
-            # extractor.prepare_params(data_requirements)
-            return "extractor.prepare_params(data_requirements)"
+            extractor.prepare_params(data_requirements)
 
         @task()
-        def extract():
-            return "extracted"
-            # data = extractor.extract()
-            # if data is None or (isinstance(data, pd.DataFrame) and data.empty):
-            #     logging.warning(
-            #         f"No data was returned from the extractor. Ending ETL run."
-            #     )
-            #     return
-            # else:
-            #     logging.info(f"Successfully extracted data.")
-            #     return data
+        def extract_transform_load(payload):
+            logging.info(f'starting extraction for {data_source['name']}')
+            logging.info(f'starting extraction for {extractor_settings}')
+    
+            extracted_data = extractor.extract()
+            if extracted_data is None or (isinstance(extracted_data, pd.DataFrame) and extracted_data.empty):
+                logging.warning(
+                    f"No data was returned from the extractor. Ending ETL run."
+                )
+                return
+            else:
+                logging.info(f"Extract completed.")
 
-        @task()
-        def transform(extracted_data):
-            return f"transformed {extracted_data}"
-            # data = transformer.transform(extracted_data)
-            # if data is None or (isinstance(data, pd.DataFrame) and data.empty):
-            #     logging.warning(f"No data returned from the transformer. Ending run.")
-            #     return
-            # else:
-            #     logging.info(f"Successfully transformed data. {data}")
-            #     return data
+            logging.info(f'starting transformation for {settings}')
+            transformed_data = transformer.transform(extracted_data, payload['mappings'])
+            if transformed_data is None or (isinstance(transformed_data, pd.DataFrame) and transformed_data.empty):
+                logging.warning(f"No data returned from the transformer. Ending run.")
+                return
+            else:
+                logging.info(f"Transform completed.")
+            
+            loader.load(transformed_data, payload)
+            logging.info("load completed.")
+            
 
-        @task()
-        def load(transformed_data, payload_settings):
-            # TODO: I think the transformer should just create a pandas dataframe with the datastream IDs so the loader shouldn't need payload_settings
-            # loader.load(transformed_data, payload_settings)
-            logging.info("data is loaded!")
-            return f"loader.load({transformed_data}, {payload_settings})"
+        # @task()
+        # def transform(extracted_data):
+        #     logging.info(f"transformed {extracted_data}")
+        #     return f"transformed {extracted_data}"
 
-        for payload in ["CSV_1", "CSV_2", "CSV_3", "CSV_4", "CSV_5"]:
-            sanitized_name = sanitize_name(payload)
-            with TaskGroup(group_id=f"{sanitized_name}") as etl_group:
-                get_reqs = get_data_requirements.override(
+
+        # @task()
+        # def load(transformed_data, payload_settings):
+        #     # TODO: I think the transformer should just create a pandas dataframe with the datastream IDs so the loader shouldn't need payload_settings
+        #     loader.load(transformed_data, payload_settings)
+        #     logging.info("data is loaded!")
+        #     return f"loader.load({transformed_data}, {payload_settings})"
+
+        for payload in payloads:
+            payload_name_safe = sanitize_name(payload['name'])
+            with TaskGroup(group_id=f"{payload_name_safe}") as etl_group:
+                get_requirements = get_data_requirements.override(
                     task_id=f"get_data_requirements"
                 )(payload)
                 prep = prepare_extractor_params.override(
                     task_id=f"prepare_extractor_params"
-                )(get_reqs)
-                ext = extract.override(task_id=f"extract")()
-                trans = transform.override(task_id=f"transform")(ext)
-                load_task = load.override(task_id=f"load")(trans, payload)
+                )(get_requirements)
+                # ext = extract.override(task_id=f"extract")()
+                # trans = transform.override(task_id=f"transform")(ext)
+                # load_task = load.override(task_id=f"load")(trans, payload)
+                etl = extract_transform_load.override(
+                    task_id=f"extract_transform_load"
+                )(payload)
 
-                get_reqs >> prep >> ext >> trans >> load_task
-
+                # get_reqs >> prep >> ext >> trans >> load_task
+                get_requirements >> prep >> etl
         # 4. (Not here) update hydroserverpy functions to use the parameter format defined above.
 
     return run_etl()
