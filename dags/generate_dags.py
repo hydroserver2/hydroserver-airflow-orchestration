@@ -5,7 +5,7 @@ import os
 import re
 
 from hydroserverpy import HydroServer
-
+from airflow import settings
 from utils.global_variables import OUTPUT_DIR
 from airflow.utils.dates import days_ago
 from airflow.decorators import dag, task
@@ -14,19 +14,18 @@ from utils.get_etl_classes import get_extractor, get_transformer, get_loader
 from airflow.utils.task_group import TaskGroup
 from hydroserverpy.etl import HydroServerLoader
 from airflow.hooks.base import BaseHook
+from airflow.models import Connection
 
 
 def read_datasources_from_file(uid):
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
     path = os.path.join(OUTPUT_DIR, f"{uid}.json")
+    if not os.path.isfile(path):
+        logging.warning(f"Orchestration system file not found: {path}")
+        return None
+
     try:
         with open(path, "r") as f:
             datasources = json.load(f)
-        
-        for ds in datasources:
-            ds["name"] = sanitize_name(ds["name"])
-            for payload in ds.get("settings", {}).get("payloads", []):
-                payload["name"] = sanitize_name(payload.get("name"))
 
         return datasources
     except Exception as e:
@@ -49,7 +48,7 @@ def sanitize_name(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", name)
 
 
-def generate_dag(data_source):
+def generate_dag(data_source, conn_id):
 
     dag_id = f"datasource_{sanitize_name(data_source['name'])}"
 
@@ -59,7 +58,7 @@ def generate_dag(data_source):
         schedule = cron
     else:
         interval = data_source.get("interval", 1)
-        unit     = data_source.get("interval_units", "minutes")
+        unit = data_source.get("interval_units", "minutes")
         schedule = timedelta(**{unit: interval})
 
     start_ts = data_source.get("start_time")
@@ -82,6 +81,7 @@ def generate_dag(data_source):
     )
     def run_etl():
         import pandas as pd
+
         settings = data_source["settings"]
 
         extractor_settings = settings["extractor"]
@@ -91,20 +91,22 @@ def generate_dag(data_source):
         transformer = get_transformer(transformer_settings)
 
         loader_settings = settings["loader"]
-        if loader_settings['type'] == 'HydroServer':
-            conn = BaseHook.get_connection("local_hydroserver_for_daniels_workspace")
+        if loader_settings["type"] == "HydroServer":
+            conn = BaseHook.get_connection(conn_id)
             scheme = conn.conn_type or "http"
             host = conn.host
             port = f":{conn.port}" if conn.port else ""
             base = f"{scheme}://{host}{port}".rstrip("/")
-            loader = HydroServerLoader(host=base, email=conn.login, password=conn.password)
+            loader = HydroServerLoader(
+                host=base, email=conn.login, password=conn.password
+            )
         # loader = get_loader(loader_settings)
 
         payloads = settings["payloads"]
 
         @task()
         def get_data_requirements(payload):
-            return loader.get_data_requirements(payload['mappings'])
+            return loader.get_data_requirements(payload["mappings"])
 
         @task()
         def prepare_extractor_params(data_requirements):
@@ -113,11 +115,10 @@ def generate_dag(data_source):
         @task(multiple_outputs=True)
         def extract_transform_load(payload):
             try:
-                logging.info(f'starting extraction for {data_source['name']}')
-                logging.info(f'starting extraction for {extractor_settings}')
-        
                 extracted_data = extractor.extract()
-                if extracted_data is None or (isinstance(extracted_data, pd.DataFrame) and extracted_data.empty):
+                if extracted_data is None or (
+                    isinstance(extracted_data, pd.DataFrame) and extracted_data.empty
+                ):
                     logging.warning(
                         f"No data was returned from the extractor. Ending ETL run."
                     )
@@ -125,58 +126,67 @@ def generate_dag(data_source):
                 else:
                     logging.info(f"Extract completed.")
 
-                logging.info(f'starting transformation for {settings}')
-                transformed_data = transformer.transform(extracted_data, payload['mappings'])
-                if transformed_data is None or (isinstance(transformed_data, pd.DataFrame) and transformed_data.empty):
-                    logging.warning(f"No data returned from the transformer. Ending run.")
+                logging.info(f"starting transformation for {settings}")
+                transformed_data = transformer.transform(
+                    extracted_data, payload["mappings"]
+                )
+                if transformed_data is None or (
+                    isinstance(transformed_data, pd.DataFrame)
+                    and transformed_data.empty
+                ):
+                    logging.warning(
+                        f"No data returned from the transformer. Ending run."
+                    )
                     return
                 else:
                     logging.info(f"Transform completed.")
-                
+
                 loader.load(transformed_data, payload)
                 logging.info("load completed.")
                 return {"success": True, "message": "OK"}
             except Exception as err:
                 return {"success": False, "message": str(err)}
-        
+
         @task()
         def update_data_source_status(success: bool, message: str):
             import croniter
+
             # 1) reconnect to HydroServer
-            conn = BaseHook.get_connection("local_hydroserver_for_daniels_workspace")
+            conn = BaseHook.get_connection(conn_id)
             scheme = conn.conn_type or "http"
-            host   = conn.host
-            port   = f":{conn.port}" if conn.port else ""
-            base   = f"{scheme}://{host}{port}".rstrip("/")
+            host = conn.host
+            port = f":{conn.port}" if conn.port else ""
+            base = f"{scheme}://{host}{port}".rstrip("/")
             service = HydroServer(host=base, email=conn.login, password=conn.password)
 
             # 2) compute next_run exactly like HydroServerETLCSV._update_data_source
             if data_source.get("crontab"):
                 next_run = croniter.croniter(
-                    data_source["crontab"], 
-                    datetime.now(timezone.utc)
+                    data_source["crontab"], datetime.now(timezone.utc)
                 ).get_next(datetime)
             elif data_source.get("interval") and data_source.get("interval_units"):
                 next_run = datetime.now(timezone.utc) + timedelta(
-                    **{ data_source["interval_units"]: data_source["interval"] }
+                    **{data_source["interval_units"]: data_source["interval"]}
                 )
             else:
                 next_run = None
 
             # 3) push the update
+            short_msg = ""
+            if message:
+                short_msg = message if len(message) <= 255 else message[:252] + "..."
             service.datasources.update(
                 uid=data_source["uid"],
                 last_run=datetime.now(timezone.utc).isoformat(),
                 last_run_successful=success,
-                last_run_message=message,
-                next_run=next_run.isoformat() if next_run else None
+                last_run_message=short_msg,
+                next_run=next_run.isoformat() if next_run else None,
             )
 
         # @task()
         # def transform(extracted_data):
         #     logging.info(f"transformed {extracted_data}")
         #     return f"transformed {extracted_data}"
-
 
         # @task()
         # def load(transformed_data, payload_settings):
@@ -186,7 +196,7 @@ def generate_dag(data_source):
         #     return f"loader.load({transformed_data}, {payload_settings})"
 
         for payload in payloads:
-            payload_name_safe = sanitize_name(payload['name'])
+            payload_name_safe = sanitize_name(payload["name"])
             with TaskGroup(group_id=f"{payload_name_safe}") as etl_group:
                 get_requirements = get_data_requirements.override(
                     task_id=f"get_data_requirements"
@@ -202,7 +212,7 @@ def generate_dag(data_source):
                 )(payload)
                 status = update_data_source_status.override(
                     task_id=f"update_data_source_status"
-                )(etl['success'],etl['message'])
+                )(etl["success"], etl["message"])
 
                 # get_reqs >> prep >> ext >> trans >> load_task
                 get_requirements >> prep >> etl >> status
@@ -211,143 +221,20 @@ def generate_dag(data_source):
     return run_etl()
 
 
-hs_connection = HydroServerAirflowConnection("local_hydroserver_for_daniels_workspace")
-uid = str(hs_connection.orchestration_system.uid)
-datasources = read_datasources_from_file(uid)
-for ds in datasources:
-    new_dag = generate_dag(ds)
-    globals()[new_dag.dag_id] = new_dag
+session = settings.Session()
+hs_conns = session.query(Connection).all()
 
+for conn in hs_conns:
+    conn_id = conn.conn_id
+    hs_connection = HydroServerAirflowConnection(conn_id)
+    uid = str(hs_connection.orchestration_system.uid)
+    datasources = read_datasources_from_file(uid)
+    logging.info(f"RAW FROM FILE: {repr(datasources)}")
 
-#     """
-#     Generate or overwrite a DAG file based on the current datasource configuration,
-#     and sync paused state with HydroServer.
-#     """
-#     ds = self.data_source.dict()
-#     schedule = ds.get("schedule", {}) or {}
-#     dag_id = str(self.data_source.uid)
+    if not datasources:
+        logging.warning(f"No datasources found for this orchestration system.")
+        continue
 
-#     cron = schedule.get("crontab")
-#     if cron:
-#         schedule_interval = cron
-#     else:
-#         interval = schedule.get("interval", 1)
-#         unit = schedule.get("intervalUnits", "minutes")
-#         # Build an actual timedelta
-#         schedule_interval = timedelta(**{unit: interval})
-
-#     dag = DAG(
-#         dag_id=dag_id,
-#         schedule_interval=schedule_interval,
-#         start_date=days_ago(1),
-#         catchup=False,
-#         tags=["hydroserver", "etl"],
-#     )
-
-#     def run_etl(task_group, task, **kwargs):
-#         logging.info("HELLOOOOOO WORLDDDDDD")
-
-#     with dag:
-#         PythonOperator(
-#             task_id="run_etl",
-#             python_callable=run_etl,
-#             op_kwargs={"task_group": "group 1", "task": "task 1"},
-#         )
-
-#     globals()[dag_id] = dag
-
-
-# def generate_dag(self):
-#     """
-#     Generate or overwrite a DAG file based on the current datasource configuration,
-#     and sync paused state with HydroServer.
-#     """
-
-#     # schedule interval
-#     schedule = self.data_source.get("schedule", {})
-#     logging.info(f"here's the schedule: {schedule}")
-#     cron = schedule.get("crontab")
-#     if cron:
-#         schedule_interval = cron
-#     else:
-#         interval = schedule.get("interval", 1)
-#         unit = schedule.get("intervalUnits", "minutes")
-#         schedule_interval = f"timedelta({unit}={interval})"
-
-#     dag = DAG(
-#         dag_id=self.data_source.id,
-#         schedule_interval=schedule_interval,
-#         start_date=days_ago(1),
-#         catchup=False,
-#         tags=["hydroserver", "etl"],
-#     )
-
-#     def run_etl(task_group, task, **kwargs):
-#         logging.info("HELLOOOOOO WORLDDDDDD")
-#         # # Extractor
-#         # ext_conf = task_group['settings']['extractor']
-#         # extractor = make_extractor(ext_conf)
-
-#         # # Transformer
-#         # tr_conf = task_group['settings']['transformer']
-#         # transformer = make_transformer(tr_conf)
-
-#         # # Loader (credentials from Airflow connection)
-#         # ld_conf = task_group['settings']['loader']
-#         # loader = make_loader(ld_conf, conn_id)
-
-#         # # Payload mapping / datastream IDs
-#         # mapping = task_group.get('payloads', [])
-
-#         # # Execute ETL
-#         # etl = HydroServerETL(extractor, transformer, loader, mapping)
-#         # etl.run()
-
-#     with dag:
-#         PythonOperator(
-#             task_id="run_etl",
-#             python_callable=run_etl,
-#             op_kwargs={"task_group": "group 1", "task": "task 1"},
-#         )
-
-#     # Register DAG so Airflow can discover it
-#     globals()[self.data_source.id] = dag
-
-
-# class DagGenerator:
-#     def __init__(self, data_source: object):
-#         # For version 1, we'll just generate the DAG every time instead of checking for changes
-#         self.data_source = data_source
-#         self.generate_dag()
-
-#     self.data_source = self.normalize_json(data_source)
-#     self.prev_data_source = self.normalize_json(self.get_prev_data_source())
-#     self.detected_changes = self.data_source != self.prev_data_source
-
-#     if self.detected_changes:
-#         self.generate_dag()
-
-# def get_prev_data_source(self):
-#     path = f"/tmp/dag_config_{self.data_source.uid}.json"
-#     self.prev_data_source = None
-#     if os.path.isfile(path):
-#         with open(path) as f:
-#             self.prev_data_source = json.load(f)
-
-# def normalize_json(self, data_source):
-#     """
-#     Recursively sort dictionaries by key and lists by their JSON string representation,
-#     so that equivalent JSON structures compare equal regardless of ordering.
-#     """
-#     if isinstance(data_source, dict):
-#         return {k: self.normalize_json(data_source[k]) for k in sorted(data_source)}
-#     if isinstance(data_source, list):
-#         normalized_list = [self.normalize_json(item) for item in data_source]
-#         try:
-#             return sorted(
-#                 normalized_list, key=lambda x: json.dumps(x, sort_keys=True)
-#             )
-#         except TypeError:
-#             # Fallback: compare as strings
-#             return sorted(normalized_list, key=lambda x: str(x))
-#     return data_source
+    for datasource in datasources:
+        new_dag = generate_dag(datasource, conn_id)
+        globals()[new_dag.dag_id] = new_dag

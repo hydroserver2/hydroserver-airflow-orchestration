@@ -8,7 +8,7 @@ from hydroserverpy.etl import (
 
 
 def get_extractor(settings: dict):
-    extractor_map = {"http": HTTPExtractor, "local": LocalFileExtractor}
+    extractor_map = {"HTTP": HTTPExtractor, "local": LocalFileExtractor}
     extractor_type = settings["type"]
     cls = extractor_map.get(extractor_type)
     if cls is None:
