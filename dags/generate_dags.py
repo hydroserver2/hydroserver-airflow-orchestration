@@ -125,8 +125,7 @@ def generate_dag(data_source, conn_id):
                     return
                 else:
                     logging.info(f"Extract completed.")
-
-                logging.info(f"starting transformation for {settings}")
+                logging.info(f"Started transformation")
                 transformed_data = transformer.transform(
                     extracted_data, payload["mappings"]
                 )

@@ -61,7 +61,7 @@ class HydroServerAirflowConnection:
                 orchestration_system = self.api.orchestrationsystems.create(
                     name=orchestration_name,
                     workspace=workspace,
-                    orchestration_system_type="ETL",
+                    orchestration_system_type="airflow",
                 )
             except Exception as e:
                 raise RuntimeError("Failed to register Airflow orchestration system.")
