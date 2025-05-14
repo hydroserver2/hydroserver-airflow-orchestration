@@ -1,3 +1,5 @@
+from airflow.hooks.base import BaseHook
+
 from hydroserverpy.etl import (
     HTTPExtractor,
     LocalFileExtractor,
@@ -25,10 +27,16 @@ def get_transformer(settings: dict):
     return cls(settings)
 
 
-def get_loader(settings: dict):
+def get_loader(settings: dict, conn_id: str):
     loader_map = {"HydroServer": HydroServerLoader}
     loader_type = settings["type"]
     cls = loader_map.get(loader_type)
     if cls is None:
         raise ValueError(f"Unknown loader type: {loader_type}")
-    return cls(settings)
+
+    conn = BaseHook.get_connection(conn_id)
+    scheme = conn.conn_type or "http"
+    port = f":{conn.port}" if conn.port else ""
+    base = f"{scheme}://{conn.host}{port}".rstrip("/")
+
+    return cls(host=base, email=conn.login, password=conn.password)

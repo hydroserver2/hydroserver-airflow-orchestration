@@ -4,16 +4,12 @@ import logging
 import os
 import re
 
-from hydroserverpy import HydroServer
 from airflow import settings
 from utils.global_variables import OUTPUT_DIR
 from airflow.utils.dates import days_ago
 from airflow.decorators import dag, task
 from utils.hydroserver_airflow_connection import HydroServerAirflowConnection
 from utils.get_etl_classes import get_extractor, get_transformer, get_loader
-from airflow.utils.task_group import TaskGroup
-from hydroserverpy.etl import HydroServerLoader
-from airflow.hooks.base import BaseHook
 from airflow.models import Connection
 
 
@@ -33,14 +29,6 @@ def read_datasources_from_file(uid):
         raise
 
 
-default_args = {
-    "owner": "airflow",
-    "depends_on_past": False,
-    "retries": 1,
-    "retry_delay": timedelta(minutes=1),
-}
-
-
 def sanitize_name(name: str) -> str:
     """
     Airflow IDs require alphanumeric or -_ characters only in ids.
@@ -48,11 +36,82 @@ def sanitize_name(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", name)
 
 
-def generate_dag(data_source, conn_id):
+@task()
+def extract_transform_load(data_source: dict, payload: dict, conn_id: str):
+    import pandas as pd
+    import croniter
 
+    settings = data_source["settings"]
+    extractor = get_extractor(settings["extractor"])
+    transformer = get_transformer(settings["transformer"])
+    loader = get_loader(settings["loader"], conn_id)
+
+    def _next_run() -> str | None:
+        now = datetime.now(timezone.utc)
+        if data_source.get("crontab"):
+            return (
+                croniter.croniter(data_source["crontab"], now)
+                .get_next(datetime)
+                .isoformat()
+            )
+        if interval := data_source.get("interval"):
+            unit = data_source.get("interval_units", "minutes")
+            return (now + timedelta(**{unit: interval})).isoformat()
+        return None
+
+    def _update_status(success: bool, msg: str):
+        short_message = msg if len(msg) <= 255 else msg[:252] + "…"
+        loader.datasources.update(
+            uid=data_source["uid"],
+            last_run=datetime.now(timezone.utc).isoformat(),
+            last_run_successful=success,
+            last_run_message=short_message,
+            next_run=_next_run(),
+        )
+
+    try:
+        logging.info(f"Started getting data requirements from loader")
+        data_requirements = loader.get_data_requirements(payload["mappings"])
+        logging.info(f"Started preparing extractor parameters")
+        extractor.prepare_params(data_requirements)
+
+        logging.info(f"Started extract")
+        extracted_data = extractor.extract()
+        if extracted_data is None or (
+            isinstance(extracted_data, pd.DataFrame) and extracted_data.empty
+        ):
+            _update_status(True, "No data returned from the extractor")
+            return
+        logging.info(f"Extract completed")
+
+        logging.info(f"Started transform")
+        transformed_data = transformer.transform(extracted_data, payload["mappings"])
+        if transformed_data is None or (
+            isinstance(transformed_data, pd.DataFrame) and transformed_data.empty
+        ):
+            _update_status(True, "No data returned from the transformer")
+            return
+        logging.info(f"Transform completed")
+
+        logging.info(f"Started load")
+        loader.load(transformed_data, payload)
+        logging.info("load completed")
+        _update_status(True, "OK")
+    except Exception as err:
+        _update_status(False, str(err))
+
+
+default_args = {
+    "owner": "airflow",
+    "depends_on_past": False,
+    "retries": 0,
+    # "retry_delay": timedelta(minutes=1),
+}
+
+
+def generate_dag(data_source, conn_id):
     dag_id = f"datasource_{sanitize_name(data_source['name'])}"
 
-    # TODO: schedule
     cron = data_source.get("crontab")
     if cron:
         schedule = cron
@@ -74,148 +133,20 @@ def generate_dag(data_source, conn_id):
         default_args=default_args,
         start_date=start_dt,
         end_date=end_dt,
-        schedule_interval=schedule,
+        max_active_runs=1,
+        schedule=schedule,
         catchup=False,
-        tags=["hydroserver", "monitoring"],
+        tags=["hydroserver", "etl"],
         is_paused_upon_creation=is_paused,
     )
     def run_etl():
-        import pandas as pd
-
-        settings = data_source["settings"]
-
-        extractor_settings = settings["extractor"]
-        extractor = get_extractor(extractor_settings)
-
-        transformer_settings = settings["transformer"]
-        transformer = get_transformer(transformer_settings)
-
-        loader_settings = settings["loader"]
-        if loader_settings["type"] == "HydroServer":
-            conn = BaseHook.get_connection(conn_id)
-            scheme = conn.conn_type or "http"
-            host = conn.host
-            port = f":{conn.port}" if conn.port else ""
-            base = f"{scheme}://{host}{port}".rstrip("/")
-            loader = HydroServerLoader(
-                host=base, email=conn.login, password=conn.password
+        for payload in data_source["settings"]["payloads"]:
+            task_id = f"{sanitize_name(payload['name'])}"
+            extract_transform_load.override(task_id=task_id)(
+                data_source=data_source,
+                payload=payload,
+                conn_id=conn_id,
             )
-        # loader = get_loader(loader_settings)
-
-        payloads = settings["payloads"]
-
-        @task()
-        def get_data_requirements(payload):
-            return loader.get_data_requirements(payload["mappings"])
-
-        @task()
-        def prepare_extractor_params(data_requirements):
-            extractor.prepare_params(data_requirements)
-
-        @task(multiple_outputs=True)
-        def extract_transform_load(payload):
-            try:
-                extracted_data = extractor.extract()
-                if extracted_data is None or (
-                    isinstance(extracted_data, pd.DataFrame) and extracted_data.empty
-                ):
-                    logging.warning(
-                        f"No data was returned from the extractor. Ending ETL run."
-                    )
-                    return
-                else:
-                    logging.info(f"Extract completed.")
-                logging.info(f"Started transformation")
-                transformed_data = transformer.transform(
-                    extracted_data, payload["mappings"]
-                )
-                if transformed_data is None or (
-                    isinstance(transformed_data, pd.DataFrame)
-                    and transformed_data.empty
-                ):
-                    logging.warning(
-                        f"No data returned from the transformer. Ending run."
-                    )
-                    return
-                else:
-                    logging.info(f"Transform completed.")
-
-                loader.load(transformed_data, payload)
-                logging.info("load completed.")
-                return {"success": True, "message": "OK"}
-            except Exception as err:
-                return {"success": False, "message": str(err)}
-
-        @task()
-        def update_data_source_status(success: bool, message: str):
-            import croniter
-
-            # 1) reconnect to HydroServer
-            conn = BaseHook.get_connection(conn_id)
-            scheme = conn.conn_type or "http"
-            host = conn.host
-            port = f":{conn.port}" if conn.port else ""
-            base = f"{scheme}://{host}{port}".rstrip("/")
-            service = HydroServer(host=base, email=conn.login, password=conn.password)
-
-            # 2) compute next_run exactly like HydroServerETLCSV._update_data_source
-            if data_source.get("crontab"):
-                next_run = croniter.croniter(
-                    data_source["crontab"], datetime.now(timezone.utc)
-                ).get_next(datetime)
-            elif data_source.get("interval") and data_source.get("interval_units"):
-                next_run = datetime.now(timezone.utc) + timedelta(
-                    **{data_source["interval_units"]: data_source["interval"]}
-                )
-            else:
-                next_run = None
-
-            # 3) push the update
-            short_msg = ""
-            if message:
-                short_msg = message if len(message) <= 255 else message[:252] + "..."
-            service.datasources.update(
-                uid=data_source["uid"],
-                last_run=datetime.now(timezone.utc).isoformat(),
-                last_run_successful=success,
-                last_run_message=short_msg,
-                next_run=next_run.isoformat() if next_run else None,
-            )
-
-        # @task()
-        # def transform(extracted_data):
-        #     logging.info(f"transformed {extracted_data}")
-        #     return f"transformed {extracted_data}"
-
-        # @task()
-        # def load(transformed_data, payload_settings):
-        #     # TODO: I think the transformer should just create a pandas dataframe with the datastream IDs so the loader shouldn't need payload_settings
-        #     loader.load(transformed_data, payload_settings)
-        #     logging.info("data is loaded!")
-        #     return f"loader.load({transformed_data}, {payload_settings})"
-
-        for payload in payloads:
-            payload_name_safe = sanitize_name(payload["name"])
-            with TaskGroup(group_id=f"{payload_name_safe}") as etl_group:
-                get_requirements = get_data_requirements.override(
-                    task_id=f"get_data_requirements"
-                )(payload)
-                prep = prepare_extractor_params.override(
-                    task_id=f"prepare_extractor_params"
-                )(get_requirements)
-                # ext = extract.override(task_id=f"extract")()
-                # trans = transform.override(task_id=f"transform")(ext)
-                # load_task = load.override(task_id=f"load")(trans, payload)
-                etl = extract_transform_load.override(
-                    task_id=f"extract_transform_load"
-                )(payload)
-                status = update_data_source_status.override(
-                    task_id=f"update_data_source_status"
-                )(etl["success"], etl["message"])
-
-                # get_reqs >> prep >> ext >> trans >> load_task
-                get_requirements >> prep >> etl >> status
-        # 4. (Not here) update hydroserverpy functions to use the parameter format defined above.
 
     return run_etl()
 
@@ -228,7 +159,6 @@ for conn in hs_conns:
     hs_connection = HydroServerAirflowConnection(conn_id)
     uid = str(hs_connection.orchestration_system.uid)
     datasources = read_datasources_from_file(uid)
-    logging.info(f"RAW FROM FILE: {repr(datasources)}")
 
     if not datasources:
         logging.warning(f"No datasources found for this orchestration system.")
