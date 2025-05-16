@@ -109,8 +109,11 @@ default_args = {
 }
 
 
-def generate_dag(data_source, conn_id):
-    dag_id = f"datasource_{sanitize_name(data_source['name'])}"
+def generate_dag(data_source, conn_id, hs_connection):
+    system_name = sanitize_name(hs_connection.orchestration_system.name)
+    workspace_name = sanitize_name(hs_connection.workspace_name)
+    ds_name = sanitize_name(data_source["name"])
+    dag_id = f"{ds_name}"
 
     cron = data_source.get("crontab")
     if cron:
@@ -136,7 +139,7 @@ def generate_dag(data_source, conn_id):
         max_active_runs=1,
         schedule=schedule,
         catchup=False,
-        tags=["hydroserver", "etl"],
+        tags=["etl", f"{system_name}", f"{workspace_name}"],
         is_paused_upon_creation=is_paused,
     )
     def run_etl():
@@ -164,6 +167,6 @@ for conn in hs_conns:
         logging.warning(f"No datasources found for this orchestration system.")
         continue
 
-    for datasource in datasources:
-        new_dag = generate_dag(datasource, conn_id)
+    for data_source in datasources:
+        new_dag = generate_dag(data_source, conn_id, hs_connection)
         globals()[new_dag.dag_id] = new_dag

@@ -18,8 +18,10 @@ def sanitize(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", name)
 
 
-def create_sync_dag(conn_id: str, orchestration_system_name: str):
-    dag_id = f"sync_{sanitize(orchestration_system_name.lower())}"
+def create_sync_dag(conn_id: str, orchestration_system_name: str, workspace_name: str):
+    system_name = sanitize(orchestration_system_name)
+    workspace_name = sanitize(workspace_name)
+    dag_id = f"sync__{system_name}"
 
     @dag(
         dag_id=dag_id,
@@ -27,7 +29,7 @@ def create_sync_dag(conn_id: str, orchestration_system_name: str):
         start_date=days_ago(1),
         schedule_interval=timedelta(minutes=5),
         catchup=False,
-        tags=["hydroserver", "monitoring"],
+        tags=["sync", f"{system_name}", f"{workspace_name}"],
     )
     def _sync():
         """
@@ -59,8 +61,9 @@ session = settings.Session()
 for conn in session.query(Connection).all():
     extras = conn.extra_dejson or {}
     name = extras.get("orchestration_system_name")
+    workspace_name = extras.get("workspace_name")
     if name:
-        new_dag = create_sync_dag(conn.conn_id, name)
+        new_dag = create_sync_dag(conn.conn_id, name, workspace_name)
         globals()[new_dag.dag_id] = new_dag
 
 # TODO: Sync paused state: compare Airflow DAG pause to HydroServer

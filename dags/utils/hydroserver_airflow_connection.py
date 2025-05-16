@@ -16,6 +16,10 @@ class HydroServerAirflowConnection:
 
     def __init__(self, conn_id: str):
         self.airflow_connection = BaseHook.get_connection(conn_id)
+        extras = self.airflow_connection.extra_dejson
+        self.workspace_name = extras.get("workspace_name")
+        self.system_name = extras.get("orchestration_system_name")
+
         self.api = self.connect_to_hydroserver()
         self.orchestration_system = self.get_or_create_orchestration_system()
         self.data_sources = self.get_datasources()
@@ -39,27 +43,23 @@ class HydroServerAirflowConnection:
             raise RuntimeError(f"Failed to connect to HydroServer: {e}")
 
     def get_or_create_orchestration_system(self):
-        extras = self.airflow_connection.extra_dejson
-        workspace_name = extras.get("workspace_name")
-        orchestration_name = extras.get("orchestration_system_name")
-
         workspaces = self.api.workspaces.list(associated_only=True)
         workspace = next(
-            (w for w in workspaces if str(w.name) == str(workspace_name)), None
+            (w for w in workspaces if str(w.name) == str(self.workspace_name)), None
         )
         if not workspace:
-            raise RuntimeError(f"Workspace {workspace_name!r} not found")
+            raise RuntimeError(f"Workspace {self.workspace_name!r} not found")
 
         orchestration_systems = self.api.orchestrationsystems.list(workspace=workspace)
         orchestration_system = next(
-            (o for o in orchestration_systems if o.name == orchestration_name),
+            (o for o in orchestration_systems if o.name == self.system_name),
             None,
         )
 
         if not orchestration_system:
             try:
                 orchestration_system = self.api.orchestrationsystems.create(
-                    name=orchestration_name,
+                    name=self.system_name,
                     workspace=workspace,
                     orchestration_system_type="airflow",
                 )
