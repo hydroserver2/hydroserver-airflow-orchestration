@@ -97,14 +97,3 @@ class HydroServerAirflowConnection:
         except Exception as e:
             logging.error(f"Failed to write datasource file {path}: {e}")
             raise
-
-
-def stringify_uuids(obj):
-    if isinstance(obj, dict):
-        return {k: stringify_uuids(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [stringify_uuids(i) for i in obj]
-    elif isinstance(obj, uuid.UUID):
-        return str(obj)
-    else:
-        return obj
