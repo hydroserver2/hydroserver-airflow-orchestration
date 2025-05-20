@@ -10,7 +10,7 @@ from airflow.utils.dates import days_ago
 from airflow.decorators import dag, task
 from utils.hydroserver_airflow_connection import HydroServerAirflowConnection
 from utils.get_etl_classes import get_extractor, get_transformer, get_loader
-from airflow.models import Connection
+from airflow.models import Connection, DagModel
 
 
 def read_datasources_from_file(uid):
@@ -140,6 +140,7 @@ def generate_dag(data_source, conn_id, hs_connection):
         schedule=schedule,
         catchup=False,
         tags=["etl", f"{system_name}", f"{workspace_name}"],
+        params={"conn_id": conn_id, "datasource_id": data_source["uid"]},
         is_paused_upon_creation=is_paused,
     )
     def run_etl():
@@ -169,4 +170,17 @@ for conn in hs_conns:
 
     for data_source in datasources:
         new_dag = generate_dag(data_source, conn_id, hs_connection)
+
+        # HydroServer's datasource.paused is the source of truth. Update current Airflow paused state
+        # to match if the user has since changed the state somewhere else.
+        dag_model = (
+            settings.Session()
+            .query(DagModel)
+            .filter(DagModel.dag_id == new_dag.dag_id)
+            .first()
+        )
+        desired_paused = bool(data_source.get("paused", False))
+        if dag_model and dag_model.is_paused != desired_paused:
+            dag_model.set_is_paused(desired_paused)
+
         globals()[new_dag.dag_id] = new_dag
