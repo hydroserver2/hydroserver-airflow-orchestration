@@ -109,7 +109,7 @@ default_args = {
 }
 
 
-def generate_dag(data_source, conn_id, hs_connection):
+def generate_dag(data_source, hs_connection):
     system_name = sanitize_name(hs_connection.orchestration_system.name)
     workspace_name = sanitize_name(hs_connection.workspace_name)
     ds_name = sanitize_name(data_source["name"])
@@ -140,7 +140,7 @@ def generate_dag(data_source, conn_id, hs_connection):
         schedule=schedule,
         catchup=False,
         tags=["etl", f"{system_name}", f"{workspace_name}"],
-        params={"conn_id": conn_id, "datasource_id": data_source["uid"]},
+        params={"conn_id": hs_connection.conn_id, "datasource_id": data_source["uid"]},
         is_paused_upon_creation=is_paused,
     )
     def run_etl():
@@ -149,7 +149,7 @@ def generate_dag(data_source, conn_id, hs_connection):
             extract_transform_load.override(task_id=task_id)(
                 data_source=data_source,
                 payload=payload,
-                conn_id=conn_id,
+                conn_id=hs_connection.conn_id,
             )
 
     return run_etl()
@@ -169,7 +169,7 @@ for conn in hs_conns:
         continue
 
     for data_source in datasources:
-        new_dag = generate_dag(data_source, conn_id, hs_connection)
+        new_dag = generate_dag(data_source, hs_connection)
 
         # HydroServer's datasource.paused is the source of truth. Update current Airflow paused state
         # to match if the user has since changed the state somewhere else.

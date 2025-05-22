@@ -1,11 +1,12 @@
 from datetime import datetime
 import json
-import os
+from pathlib import Path
 import uuid
 from airflow.hooks.base import BaseHook
 import hydroserverpy
 import logging
 from utils.global_variables import OUTPUT_DIR
+from functools import cached_property
 
 
 class HydroServerAirflowConnection:
@@ -15,83 +16,90 @@ class HydroServerAirflowConnection:
     """
 
     def __init__(self, conn_id: str):
-        self.airflow_connection = BaseHook.get_connection(conn_id)
-        extras = self.airflow_connection.extra_dejson
-        self.workspace_name = extras.get("workspace_name")
-        self.system_name = extras.get("orchestration_system_name")
+        self.conn_id = conn_id
 
-        self.api = self.connect_to_hydroserver()
-        self.orchestration_system = self.get_or_create_orchestration_system()
-        self.data_sources = self.get_datasources()
+    @cached_property
+    def extras(self):
+        conn = BaseHook.get_connection(self.conn_id)
+        return conn.extra_dejson
 
-    def connect_to_hydroserver(self):
-        """Uses connection settings to register app on HydroServer"""
+    @cached_property
+    def workspace_name(self):
+        return str(self.extras["workspace_name"])
 
-        conn = self.airflow_connection
+    @cached_property
+    def api(self):
+        """Lazily connect the HydroServer API client."""
+        extras = self.extras
+        conn = BaseHook.get_connection(self.conn_id)
+
         scheme = conn.conn_type or "http"
         host = conn.host
         port = f":{conn.port}" if conn.port else ""
         base = f"{scheme}://{host}{port}".rstrip("/")
 
-        try:
+        if key := extras.get("api_key"):
+            logging.info("Authenticating via API key")
+            return hydroserverpy.HydroServer(host=base, apikey=key)
+
+        if conn.login and conn.password:
+            logging.info("Authenticating via username and password")
             return hydroserverpy.HydroServer(
-                host=base,
-                email=conn.login,
-                password=conn.password,
+                host=base, email=conn.login, password=conn.password
             )
-        except Exception as e:
-            raise RuntimeError(f"Failed to connect to HydroServer: {e}")
 
-    def get_or_create_orchestration_system(self):
-        workspaces = self.api.workspaces.list(associated_only=True)
-        workspace = next(
-            (w for w in workspaces if str(w.name) == str(self.workspace_name)), None
-        )
-        if not workspace:
-            raise RuntimeError(f"Workspace {self.workspace_name!r} not found")
+        raise RuntimeError("No valid authentication found (login/password or API key).")
 
-        orchestration_systems = self.api.orchestrationsystems.list(workspace=workspace)
-        orchestration_system = next(
-            (o for o in orchestration_systems if o.name == self.system_name),
-            None,
-        )
+    @cached_property
+    def orchestration_system(self):
+        system_name = str(self.extras["orchestration_system_name"])
+        ws_list = self.api.workspaces.list(associated_only=True)
+        ws = next((w for w in ws_list if str(w.name) == self.workspace_name), None)
+        if not ws:
+            raise RuntimeError(f"Workspace {self.workspace_name} not found")
 
-        if not orchestration_system:
-            try:
-                orchestration_system = self.api.orchestrationsystems.create(
-                    name=self.system_name,
-                    workspace=workspace,
-                    orchestration_system_type="airflow",
-                )
-            except Exception as e:
-                raise RuntimeError("Failed to register Airflow orchestration system.")
+        os_list = self.api.orchestrationsystems.list(workspace=ws)
+        orchestration_system = next((o for o in os_list if o.name == system_name), None)
 
+        if orchestration_system:
+            logging.info(f"Found orchestration system {system_name}")
+        else:
+            logging.info(
+                f"API couldn't find orchestration system {system_name}. Registering name..."
+            )
+            orchestration_system = self.api.orchestrationsystems.create(
+                name=system_name,
+                workspace=ws,
+                orchestration_system_type="airflow",
+            )
         return orchestration_system
 
-    def get_datasources(self):
-        return self.api.datasources.list(orchestration_system=self.orchestration_system)
+    @cached_property
+    def data_sources(self):
+        return list(
+            self.api.datasources.list(orchestration_system=self.orchestration_system)
+        )
 
-    def save_datasources_to_file(self):
-        uid = str(self.orchestration_system.uid)
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
-        path = os.path.join(OUTPUT_DIR, f"{uid}.json")
+    def save_data_sources_to_file(self):
+        uid = self.orchestration_system.uid
+        path = Path(OUTPUT_DIR) / f"{uid}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        def clean(obj):
+            if isinstance(obj, dict):
+                return {k: clean(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [clean(v) for v in obj]
+            if isinstance(obj, uuid.UUID):
+                return str(obj)
+            if isinstance(obj, datetime):
+                return obj.isoformat()
+            return obj
+
         try:
-            raw = [ds.dict() for ds in self.data_sources]
-
-            def clean(obj):
-                if isinstance(obj, dict):
-                    return {k: clean(v) for k, v in obj.items()}
-                if isinstance(obj, list):
-                    return [clean(v) for v in obj]
-                if isinstance(obj, uuid.UUID):
-                    return str(obj)
-                if isinstance(obj, datetime):
-                    return obj.isoformat()
-                return obj
-
-            cleaned = [clean(ds) for ds in raw]
-
             with open(path, "w") as f:
+                raw = [ds.dict() for ds in self.data_sources]
+                cleaned = [clean(ds) for ds in raw]
                 json.dump(cleaned, f, indent=2)
             logging.info(f"Saved {len(self.data_sources)} datasources to {path}")
         except Exception as e:
