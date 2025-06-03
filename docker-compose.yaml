@@ -34,7 +34,9 @@ x-airflow-common: &airflow-common
   depends_on: &airflow-common-depends-on
     redis:
       condition: service_healthy
-    postgres:
+    postgres-local:
+      condition: service_healthy
+    cloudsql-proxy:
       condition: service_healthy
 
 services:
@@ -186,5 +188,6 @@ services:
 
 volumes:
   postgres-db-volume:
+  cloudsql:
   airflow_logs:
   airflow_config:
