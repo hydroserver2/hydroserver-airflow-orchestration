@@ -81,7 +81,7 @@ jobs:
           terraform plan \
           -no-color -input=false \
           -var "instance=${{ github.event.inputs.environment }}" \
-          -var "release=${{ github.event.inputs.release }} \
+          -var "release=${{ github.event.inputs.release }}" \
           -var "region=${{ vars.GCP_REGION }}" \
           -var "project_id=${{ vars.GCP_PROJECT_ID }}" \
           -var "label_key=${{ vars.GCP_LABEL_KEY || 'hs-airflow-instance' }}" \
@@ -95,7 +95,7 @@ jobs:
           terraform apply \
           -auto-approve -input=false \
           -var "instance=${{ github.event.inputs.environment }}" \
-          -var "release=${{ github.event.inputs.release }} \
+          -var "release=${{ github.event.inputs.release }}" \
           -var "region=${{ vars.GCP_REGION }}" \
           -var "project_id=${{ vars.GCP_PROJECT_ID }}" \
           -var "label_key=${{ vars.GCP_LABEL_KEY || 'hs-airflow-instance' }}" \
