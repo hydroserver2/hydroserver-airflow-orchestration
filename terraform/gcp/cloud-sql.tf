@@ -42,8 +42,8 @@ resource "google_sql_database_instance" "db_instance" {
 
   lifecycle {
     ignore_changes = [
-      settings.tier,
-      settings.database_flags
+      settings[0].tier,
+      settings[0].database_flags
     ]
   }
 }
