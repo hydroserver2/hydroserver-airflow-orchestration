@@ -65,7 +65,7 @@ EOF
 
     # Start Docker containers
     docker-compose --env-file .env --profile gcp up -d
-  EOT
+EOT
 
   service_account {
     email  = google_service_account.gce_service_account.email
