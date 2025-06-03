@@ -85,7 +85,10 @@ EOT
   }
 
 
-  depends_on = [google_service_account.gce_service_account]
+  depends_on = [
+    google_service_account.gce_service_account,
+    google_sql_database_instance.db_instance
+  ]
 }
 
 
