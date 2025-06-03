@@ -1,0 +1,150 @@
+name: HydroServer Airflow Orchestration System GCP Cloud Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Enter a deployment environment to use.'
+        type: environment
+        required: true
+      action:
+        description: 'Enter the action you want to perform.'
+        type: choice
+        required: true
+        options:
+        - Deploy HydroServer Airflow
+        - Teardown HydroServer Airflow
+      release:
+        description: 'Enter the HydroServer Airflow release tag to use.'
+        type: string
+        required: false
+        default: 'latest'
+
+permissions:
+  contents: write
+  id-token: write
+  actions: write
+
+jobs:
+  check-environment-variables:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    env:
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_IDENTITY_PROVIDER: ${{ vars.GCP_IDENTITY_PROVIDER }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      GCP_SSL_CERTIFICATE_NAME: ${{ vars.GCP_SSL_CERTIFICATE_NAME }}
+      TERRAFORM_BUCKET: ${{ vars.TERRAFORM_BUCKET }}
+    steps:
+      - name: Check Required Environment Variables
+        run: |
+          echo "Checking required environment variables..."
+          required_vars=(GCP_REGION GCP_PROJECT_ID GCP_IDENTITY_PROVIDER GCP_SERVICE_ACCOUNT GCP_SSL_CERTIFICATE_NAME TERRAFORM_BUCKET)
+          for var in "${required_vars[@]}"; do
+            if [ -z "${!var}" ]; then
+              echo "Error: Environment variable $var is not defined."
+              exit 1
+            fi
+          done
+
+  deploy-airflow:
+    needs: check-environment-variables
+    if: github.event.inputs.action == 'Deploy HydroServer Airflow'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    defaults:
+      run:
+        working-directory: ./terraform/gcp
+    steps:
+      - name: Checkout Ops Repo
+        uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Configure GCP Credentials
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v1
+      - name: Terraform Init
+        run: |
+          terraform init \
+          -backend-config="impersonate_service_account=${{ vars.GCP_SERVICE_ACCOUNT }}" \
+          -backend-config="bucket=${{ vars.TERRAFORM_BUCKET }}" \
+          -backend-config="prefix=state/hs_airflow_${{ github.event.inputs.environment }}"
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan \
+          -no-color -input=false \
+          -var "instance=${{ github.event.inputs.environment }}" \
+          -var "release=${{ github.event.inputs.release }} \
+          -var "region=${{ vars.GCP_REGION }}" \
+          -var "project_id=${{ vars.GCP_PROJECT_ID }}" \
+          -var "label_key=${{ vars.GCP_LABEL_KEY || 'hs-airflow-instance' }}" \
+          -var "label_value=${{ vars.GCP_LABEL_VALUE || github.event.inputs.environment }}"
+        continue-on-error: true
+      - name: Terraform Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+      - name: Terraform Apply
+        run: |
+          terraform apply \
+          -auto-approve -input=false \
+          -var "instance=${{ github.event.inputs.environment }}" \
+          -var "release=${{ github.event.inputs.release }} \
+          -var "region=${{ vars.GCP_REGION }}" \
+          -var "project_id=${{ vars.GCP_PROJECT_ID }}" \
+          -var "label_key=${{ vars.GCP_LABEL_KEY || 'hs-airflow-instance' }}" \
+          -var "label_value=${{ vars.GCP_LABEL_VALUE || github.event.inputs.environment }}"
+
+  teardown-airflow:
+    needs: check-environment-variables
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    if: success() && github.event.inputs.action == 'Teardown HydroServer Airflow'
+    defaults:
+      run:
+        working-directory: ./terraform/gcp
+    steps:
+      - name: Checkout Ops Repo
+        uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Configure GCP Credentials
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v1
+      - name: Terraform Init
+        run: |
+          terraform init \
+          -backend-config="impersonate_service_account=${{ vars.GCP_SERVICE_ACCOUNT }}" \
+          -backend-config="bucket=${{ vars.TERRAFORM_BUCKET }}" \
+          -backend-config="prefix=state/hs_airflow_${{ github.event.inputs.environment }}"
+      - name: Terraform Plan Destroy
+        id: plan_destroy
+        run: |
+          terraform state rm google_sql_user.db_user || true
+          terraform state rm google_sql_database.db || true
+          terraform state rm google_sql_database_instance.db_instance || true
+          terraform plan -destroy -no-color -input=false \
+          -var instance="${{ github.event.inputs.environment }}" \
+          -var region="${{ vars.GCP_REGION }}" \
+          -var project_id="${{ vars.GCP_PROJECT_ID }}" \
+        continue-on-error: true
+      - name: Terraform Plan Destroy Status
+        if: steps.plan_destroy.outcome == 'failure'
+        run: exit 1
+      - name: Terraform Destroy
+        run: |
+          terraform destroy -auto-approve -input=false \
+          -var instance="${{ github.event.inputs.environment }}" \
+          -var region="${{ vars.GCP_REGION }}" \
+          -var project_id="${{ vars.GCP_PROJECT_ID }}" \

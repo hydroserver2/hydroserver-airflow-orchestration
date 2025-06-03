@@ -14,8 +14,8 @@ x-airflow-common: &airflow-common
   environment: &airflow-common-env
     PYTHONPATH: /opt/airflow/hydroserverpy:/opt/airflow/dags
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: ${AIRFLOW__DATABASE__SQL_ALCHEMY_CONN:-postgresql+psycopg2://airflow:airflow@postgres/airflow}
+    AIRFLOW__CELERY__RESULT_BACKEND: ${AIRFLOW__CELERY__RESULT_BACKEND:-db+postgresql://airflow:airflow@postgres/airflow}
     AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
     AIRFLOW__CORE__FERNET_KEY: ""
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
@@ -38,8 +38,10 @@ x-airflow-common: &airflow-common
       condition: service_healthy
 
 services:
-  postgres:
+  postgres-local:
     image: postgres:13
+    profiles:
+      - local
     environment:
       POSTGRES_USER: airflow
       POSTGRES_PASSWORD: airflow
@@ -51,6 +53,19 @@ services:
       interval: 10s
       retries: 5
       start_period: 5s
+    restart: always
+
+  cloudsql-proxy:
+    image: gcr.io/cloudsql-docker/gce-proxy:1.37.7
+    profiles:
+      - gcp
+    command: [
+      "/cloud_sql_proxy",
+      "-dir=/cloudsql",
+      "-instances=${CLOUD_SQL_INSTANCE_CONNECTION_NAME}=unix",
+    ]
+    volumes:
+      - cloudsql:/cloudsql
     restart: always
 
   redis:
