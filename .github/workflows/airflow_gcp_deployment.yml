@@ -40,7 +40,7 @@ jobs:
       - name: Check Required Environment Variables
         run: |
           echo "Checking required environment variables..."
-          required_vars=(GCP_REGION GCP_PROJECT_ID GCP_IDENTITY_PROVIDER GCP_SERVICE_ACCOUNT GCP_SSL_CERTIFICATE_NAME TERRAFORM_BUCKET)
+          required_vars=(GCP_REGION GCP_PROJECT_ID GCP_IDENTITY_PROVIDER GCP_SERVICE_ACCOUNT TERRAFORM_BUCKET)
           for var in "${required_vars[@]}"; do
             if [ -z "${!var}" ]; then
               echo "Error: Environment variable $var is not defined."
