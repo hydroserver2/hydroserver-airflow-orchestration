@@ -9,6 +9,7 @@ resource "google_sql_database_instance" "db_instance" {
   deletion_protection = true
   settings {
     tier = "db-f1-micro"
+    edition  = "ENTERPRISE"
     availability_type = "REGIONAL"
     ip_configuration {
       ipv4_enabled = true
