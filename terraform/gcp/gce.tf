@@ -57,7 +57,7 @@ resource "google_compute_instance" "airflow" {
     CELERY_RESULT_BACKEND=$(echo "$DB_URL" | sed 's|^postgresql://|db+postgresql://|')
 
     # Create .env file with no leading whitespace
-    cat <<EOF > .env
+    cat <<'EOF' > .env
 AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=$SQL_ALCHEMY_CONN
 AIRFLOW__CELERY__RESULT_BACKEND=$CELERY_RESULT_BACKEND
 CLOUD_SQL_INSTANCE_CONNECTION_NAME=$DB_INSTANCE
