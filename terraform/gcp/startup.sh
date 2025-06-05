@@ -23,9 +23,9 @@ echo "Deploying with version: $RELEASE_TAG"
 
 cd /opt
 curl -sL "https://github.com/hydroserver2/hydroserver-airflow-orchestration/archive/refs/tags/${RELEASE_TAG}.tar.gz" | tar xz
-curl -sL "https://github.com/hydroserver2/hydroserverpy/archive/refs/heads/main.tar.gz" | tar xz
 mv "hydroserver-airflow-orchestration-${RELEASE_TAG}" airflow
-mv "hydroserverpy-main" airflow/hydroserverpy
+curl -sL "https://github.com/hydroserver2/hydroserverpy/archive/refs/heads/main.tar.gz" | tar xz
+mv "hydroserverpy-main" hydroserverpy
 cd airflow
 
 DB_URL=$(gcloud secrets versions access latest --secret="$SECRET_NAME" --project="$PROJECT_ID")
