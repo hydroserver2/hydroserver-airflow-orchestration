@@ -136,6 +136,7 @@ jobs:
           terraform state rm google_sql_database_instance.db_instance || true
           terraform plan -destroy -no-color -input=false \
           -var instance="${{ github.event.inputs.environment }}" \
+          -var "release=${{ github.event.inputs.release }}" \
           -var region="${{ vars.GCP_REGION }}" \
           -var project_id="${{ vars.GCP_PROJECT_ID }}" \
         continue-on-error: true
@@ -146,5 +147,6 @@ jobs:
         run: |
           terraform destroy -auto-approve -input=false \
           -var instance="${{ github.event.inputs.environment }}" \
+          -var "release=${{ github.event.inputs.release }}" \
           -var region="${{ vars.GCP_REGION }}" \
           -var project_id="${{ vars.GCP_PROJECT_ID }}" \
