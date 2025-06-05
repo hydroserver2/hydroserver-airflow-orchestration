@@ -23,7 +23,6 @@ x-airflow-common: &airflow-common
     AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session"
     # See https://airflow.apache.org/docs/apache-airflow/stable/administration-and-deployment/logging-monitoring/check-health.html#scheduler-health-check-server
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
-    _PIP_ADDITIONAL_REQUIREMENTS: "-e /opt/airflow/hydroserverpy"
     # AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
   volumes:
     - airflow_logs:/opt/airflow/logs
@@ -31,7 +30,6 @@ x-airflow-common: &airflow-common
     - cloudsql_proxy:/cloudsql
     # Ensures local changes to hydroserverpy and dags are available in real-time
     - ./dags:/opt/airflow/dags
-    - ../hydroserverpy:/opt/airflow/hydroserverpy
   depends_on: &airflow-common-depends-on
     redis:
       condition: service_healthy
@@ -41,8 +39,6 @@ x-airflow-common: &airflow-common
 services:
   cloudsql-proxy:
     image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.16.0
-    profiles:
-      - gcp
     command:
       - "--unix-socket=/cloudsql"
       - "${CLOUD_SQL_INSTANCE_CONNECTION_NAME}"

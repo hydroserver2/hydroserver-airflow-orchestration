@@ -41,4 +41,4 @@ AIRFLOW__CELERY__RESULT_BACKEND=$CELERY_RESULT_BACKEND
 CLOUD_SQL_INSTANCE_CONNECTION_NAME=$DB_INSTANCE
 EOF
 
-docker-compose --env-file .env --profile gcp up -d
+docker-compose --env-file .env -f docker-compose.gcp.yaml up -d
