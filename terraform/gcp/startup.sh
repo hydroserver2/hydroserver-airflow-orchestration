@@ -18,12 +18,13 @@ if [ "$RELEASE_TAG" = "latest" ]; then
   echo "Fetching latest release tag from GitHub..."
   RELEASE_TAG=$(curl -sL https://api.github.com/repos/hydroserver2/hydroserver-airflow-orchestration/releases/latest | jq -r '.tag_name')
 fi
+STRIPPED_TAG="${RELEASE_TAG#v}"
 
 echo "Deploying with version: $RELEASE_TAG"
 
 cd /opt
 curl -sL "https://github.com/hydroserver2/hydroserver-airflow-orchestration/archive/refs/tags/${RELEASE_TAG}.tar.gz" | tar xz
-mv "hydroserver-airflow-orchestration-${RELEASE_TAG}" airflow
+mv "hydroserver-airflow-orchestration-${STRIPPED_TAG}" airflow
 curl -sL "https://github.com/hydroserver2/hydroserverpy/archive/refs/heads/main.tar.gz" | tar xz
 mv "hydroserverpy-main" hydroserverpy
 cd airflow
