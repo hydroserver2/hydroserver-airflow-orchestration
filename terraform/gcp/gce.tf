@@ -14,6 +14,12 @@ resource "google_compute_instance" "airflow" {
     }
   }
 
+  attached_disk {
+    source      = google_compute_disk.airflow_data.id
+    device_name = "airflow-data"
+    mode        = "READ_WRITE"
+  }
+
   network_interface {
     network = "default"
     access_config {}
@@ -41,7 +47,6 @@ resource "google_compute_instance" "airflow" {
 
   depends_on = [
     google_service_account.gce_service_account,
-    google_sql_database_instance.db_instance
   ]
 }
 
@@ -56,18 +61,20 @@ resource "google_service_account" "gce_service_account" {
   project      = data.google_project.gcp_project.project_id
 }
 
-resource "google_project_iam_member" "cloud_run_sql_access" {
-  project = data.google_project.gcp_project.project_id
-  role   = "roles/cloudsql.client"
+resource "google_project_iam_member" "airflow_disk_access" {
+  project      = data.google_project.gcp_project.project_id
+  role   = "roles/compute.storageAdmin"
   member = "serviceAccount:${google_service_account.gce_service_account.email}"
 }
 
-resource "google_secret_manager_secret_iam_member" "secret_access" {
-  for_each = {
-    "database_url" = google_secret_manager_secret.database_url.id,
-  }
-  project   = data.google_project.gcp_project.project_id
-  secret_id = each.value
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.gce_service_account.email}"
+
+# ---------------------------------
+# Google Compute Disk
+# ---------------------------------
+
+resource "google_compute_disk" "airflow_data" {
+  name  = "hs-airflow-disk-${var.instance}"
+  type  = "pd-balanced"
+  zone  = local.zone
+  size  = 30
 }

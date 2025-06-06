@@ -7,12 +7,29 @@ apt-get install -y docker.io docker-compose jq curl
 systemctl enable docker
 systemctl start docker
 
-SECRET_NAME="hs-airflow-${HOSTNAME##*-}-database-url"
-PROJECT_ID="$(curl -s -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/project/project-id)"
-REGION=$(curl -s -H "Metadata-Flavor: Google" \
-  "http://metadata.google.internal/computeMetadata/v1/instance/zone" \
-  | sed 's/.*\/zones\///' | sed 's/-[a-z]$//')
+# Persistent disk setup
+DISK_DEVICE="/dev/disk/by-id/google-airflow-data"
+MOUNT_POINT="/mnt/disks/airflow-data"
+PGDATA_DIR="$MOUNT_POINT/pgdata"
 
+# Format the disk if it hasn't been formatted
+if ! blkid "$DISK_DEVICE" >/dev/null 2>&1; then
+  echo "Formatting persistent disk $DISK_DEVICE..."
+  mkfs.ext4 -m 0 -F -E lazy_itable_init=0,lazy_journal_init=0,discard "$DISK_DEVICE"
+fi
+
+# Mount the disk
+mkdir -p "$MOUNT_POINT"
+mount -o discard,defaults "$DISK_DEVICE" "$MOUNT_POINT"
+
+# Persist the mount across reboots
+grep -q "$DISK_DEVICE" /etc/fstab || echo "$DISK_DEVICE $MOUNT_POINT ext4 defaults,discard 0 2" >> /etc/fstab
+
+# Prepare Postgres data directory
+mkdir -p "$PGDATA_DIR"
+chown -R 1000:1000 "$PGDATA_DIR"
+
+# Fetch release tag
 RELEASE_TAG="${RELEASE_TAG:-latest}"
 if [ "$RELEASE_TAG" = "latest" ]; then
   echo "Fetching latest release tag from GitHub..."
@@ -22,23 +39,11 @@ STRIPPED_TAG="${RELEASE_TAG#v}"
 
 echo "Deploying with version: $RELEASE_TAG"
 
+# Download source code
 cd /opt
 curl -sL "https://github.com/hydroserver2/hydroserver-airflow-orchestration/archive/refs/tags/${RELEASE_TAG}.tar.gz" | tar xz
 mv "hydroserver-airflow-orchestration-${STRIPPED_TAG}" airflow
-curl -sL "https://github.com/hydroserver2/hydroserverpy/archive/refs/heads/main.tar.gz" | tar xz
-mv "hydroserverpy-main" hydroserverpy
+
+# Start Airflow with GCP-specific Docker Compose config
 cd airflow
-
-DB_URL=$(gcloud secrets versions access latest --secret="$SECRET_NAME" --project="$PROJECT_ID")
-DB_INSTANCE="${PROJECT_ID}:${REGION}:hs-airflow-${HOSTNAME##*-}"
-
-SQL_ALCHEMY_CONN=$(echo "$DB_URL" | sed 's|^postgresql://|postgresql+psycopg2://|')
-CELERY_RESULT_BACKEND=$(echo "$DB_URL" | sed 's|^postgresql://|db+postgresql://|')
-
-cat <<EOF > .env
-AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=$SQL_ALCHEMY_CONN
-AIRFLOW__CELERY__RESULT_BACKEND=$CELERY_RESULT_BACKEND
-CLOUD_SQL_INSTANCE_CONNECTION_NAME=$DB_INSTANCE
-EOF
-
-docker-compose --env-file .env -f docker-compose.gcp.yaml up -d
+docker-compose -f docker-compose.gcp.yaml up -d
