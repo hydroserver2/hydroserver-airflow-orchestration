@@ -39,4 +39,7 @@ def get_loader(settings: dict, conn_id: str):
     port = f":{conn.port}" if conn.port else ""
     base = f"{scheme}://{conn.host}{port}".rstrip("/")
 
-    return cls(host=base, email=conn.login, password=conn.password)
+    if key := conn.extra_dejson.get("api_key"):
+        return cls(host=base, apikey=key)
+    else:
+        return cls(host=base, email=conn.login, password=conn.password)

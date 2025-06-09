@@ -6,7 +6,7 @@ resource "google_compute_instance" "airflow" {
   name         = "hs-airflow-${var.instance}"
   project      = var.project_id
   zone         = local.zone
-  machine_type = "e2-medium"
+  machine_type = "e2-highmem-2"
 
   boot_disk {
     initialize_params {
