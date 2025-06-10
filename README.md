@@ -23,4 +23,4 @@ If the dags are visible and running successfully on the airflow console, you're 
 
 ## Deploying to Google Cloud Platform
 
-Follow [these instructions](https://github.com/hydroserver2/hydroserver-airflow-orchestration/blob/main/docs/deployment/gcp/gcp-deployment.md)to deploy Airflow in Google Cloud Platform.
+Follow [these instructions](https://github.com/hydroserver2/hydroserver-airflow-orchestration/blob/main/docs/deployment/gcp/gcp-deployment.md) to deploy Airflow in Google Cloud Platform.
