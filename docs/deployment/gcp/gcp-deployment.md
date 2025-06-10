@@ -72,7 +72,7 @@ The HydroServer Airflow Orchestration tool uses the following GCP services. Comp
    }
    ```
 3. Go to **DAGs** and look for a `sync` DAG. Ensure this DAG is un-paused and wait for it to run or run it manually.
-4. In another tab, log in to HydroServer and go to **Data Management** > **Job Orchestration**. You should see you Airflow instance registered under Orchestration systems and you can now add data sources for it to load.
+4. In another tab, log in to HydroServer and go to **Data Management** > **Job Orchestration**. You should see you Airflow instance registered under **Orchestration systems** and you can now add data sources for it to load.
 
 ## Tearing Down HydroServer Airflow Orchestration System
 
