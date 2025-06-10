@@ -54,16 +54,16 @@ The HydroServer Airflow Orchestration tool uses the following GCP services. Comp
 ### Configure Airflow
 
 1. Log in to the HydroServer admin dashboard using the following credentials:  
-   **Username:** `airflow`
-   **Password:** `airflow`
+   - **Username:** `airflow`
+   - **Password:** `airflow`
 2. Go to **Admin** > **Connections** and click "Add a new record". Fill out the following fields to register your Airflow deployment with a HydroServer instance:
-   **Connection Id**:
-   **Connection Type**:
-   **Host**:
-   **Schema**:
-   **Login**:
-   **Password**:
-   **Extra**: A JSON object containing the workspace name Airflow will be associated with, the name of the Airflow instance, and an API key (if not using username/password):
+   - **Connection Id**: Enter an ID that will be used internally by Airflow to associate DAGs with this connection.
+   - **Connection Type**: Select "HTTP".
+   - **Host**: The host of the HydroServer instance Airflow will connect to (e.g. "playground.hydroserver.org").
+   - **Schema**: The URL schema of the HydroServer instance Airflow will connect to (e.g. "https").
+   - **Login**: Your HydroServer account email (unless using an API key).
+   - **Password**: Your HydroServer account password (unless using an API key).
+   - **Extra**: A JSON object containing the workspace name Airflow will be associated with, the name of the Airflow instance, and an API key (if not using username/password):
    ```json
    {
      "workspace_name": "My Workspace",
