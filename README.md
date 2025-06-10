@@ -20,3 +20,7 @@ Your local Airflow console instance will be running at http://localhost:8080 aft
 7. Pass the connection id created in step 4 into the 'get_hydroserver_loader()' function for each dag you'd like to test.
 
 If the dags are visible and running successfully on the airflow console, you're done with your setup!
+
+## Deploying to Google Cloud Platform
+
+Follow [these instructions](https://github.com/hydroserver2/hydroserver-airflow-orchestration/blob/main/docs/deployment/gcp/gcp-deployment.md)to deploy Airflow in Google Cloud Platform.
