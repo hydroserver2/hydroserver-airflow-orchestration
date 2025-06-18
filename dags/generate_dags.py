@@ -70,13 +70,8 @@ def extract_transform_load(data_source: dict, payload: dict, conn_id: str):
         )
 
     try:
-        logging.info(f"Started getting data requirements from loader")
-        data_requirements = loader.get_data_requirements(payload["mappings"])
-        logging.info(f"Started preparing extractor parameters")
-        extractor.prepare_params(data_requirements)
-
         logging.info(f"Started extract")
-        extracted_data = extractor.extract()
+        extracted_data = extractor.extract(payload, loader)
         if extracted_data is None or (
             isinstance(extracted_data, pd.DataFrame) and extracted_data.empty
         ):
