@@ -33,7 +33,7 @@ class HydroServerAirflowConnection:
         extras = self.extras
         conn = BaseHook.get_connection(self.conn_id)
 
-        scheme = conn.conn_type or "http"
+        scheme = conn.schema or "http"
         host = conn.host
         port = f":{conn.port}" if conn.port else ""
         base = f"{scheme}://{host}{port}".rstrip("/")
