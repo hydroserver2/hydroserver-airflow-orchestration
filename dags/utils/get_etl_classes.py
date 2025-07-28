@@ -35,7 +35,7 @@ def get_loader(settings: dict, conn_id: str):
         raise ValueError(f"Unknown loader type: {loader_type}")
 
     conn = BaseHook.get_connection(conn_id)
-    scheme = conn.conn_type or "http"
+    scheme = conn.schema or "http"
     port = f":{conn.port}" if conn.port else ""
     base = f"{scheme}://{conn.host}{port}".rstrip("/")
 
