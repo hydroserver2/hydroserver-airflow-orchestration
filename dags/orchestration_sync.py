@@ -33,14 +33,16 @@ def create_sync_dag(conn_id: str, system_name: str, workspace_name: str):
         This DAG will
         1. Connect to HydroServer via hydroserverpy
         2. Register the Airflow connections as HydroServer orchestration systems if not already registered
-        3. Fetch associated data sources and save them in the dags/ directory
-        4. TODO: Compare new datasources to existing files so we don't regenerate DAGs more than we need to
+        3. TODO: Compare new datasources to existing files so we don't regenerate DAGs more than we need to
         """
 
         @task()
         def sync_hydroserver_orchestration():
+            # TODO: This file is mostly just registering orchestration systems now that the generate_dag file
+            # pulls datasources fresh each run. Consider consolidating the files.
+            # TODO: Probably we want to move orchestration system registration to the datasource model
+            # so hydroserverpy users can register their own custom orchestrators easily.
             hs = HydroServerAirflowConnection(conn_id)
-            hs.save_data_sources_to_file()
 
         sync_hydroserver_orchestration()
 

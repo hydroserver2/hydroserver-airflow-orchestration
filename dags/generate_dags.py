@@ -9,8 +9,8 @@ from utils.global_variables import OUTPUT_DIR
 from airflow.utils.dates import days_ago
 from airflow.decorators import dag, task
 from utils.hydroserver_airflow_connection import HydroServerAirflowConnection
-from utils.get_etl_classes import get_extractor, get_transformer, get_loader
 from airflow.models import Connection, DagModel
+from hydroserverpy.api.models.etl.data_source import DataSource
 
 
 def read_datasources_from_file(uid):
@@ -36,66 +36,6 @@ def sanitize_name(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", name)
 
 
-@task()
-def extract_transform_load(data_source: dict, payload: dict, conn_id: str):
-    import pandas as pd
-    import croniter
-
-    settings = data_source["settings"]
-    extractor = get_extractor(settings["extractor"])
-    transformer = get_transformer(settings["transformer"])
-    loader = get_loader(settings["loader"], conn_id)
-
-    def _next_run() -> str | None:
-        now = datetime.now(timezone.utc)
-        if data_source.get("crontab"):
-            return (
-                croniter.croniter(data_source["crontab"], now)
-                .get_next(datetime)
-                .isoformat()
-            )
-        if interval := data_source.get("interval"):
-            unit = data_source.get("interval_units", "minutes")
-            return (now + timedelta(**{unit: interval})).isoformat()
-        return None
-
-    def _update_status(success: bool, msg: str):
-        short_message = msg if len(msg) <= 255 else msg[:252] + "…"
-        loader.datasources.update(
-            uid=data_source["uid"],
-            last_run=datetime.now(timezone.utc).isoformat(),
-            last_run_successful=success,
-            last_run_message=short_message,
-            next_run=_next_run(),
-        )
-
-    try:
-        logging.info(f"Started extract")
-        extracted_data = extractor.extract(payload, loader)
-        if extracted_data is None or (
-            isinstance(extracted_data, pd.DataFrame) and extracted_data.empty
-        ):
-            _update_status(True, "No data returned from the extractor")
-            return
-        logging.info(f"Extract completed")
-
-        logging.info(f"Started transform")
-        transformed_data = transformer.transform(extracted_data, payload["mappings"])
-        if transformed_data is None or (
-            isinstance(transformed_data, pd.DataFrame) and transformed_data.empty
-        ):
-            _update_status(True, "No data returned from the transformer")
-            return
-        logging.info(f"Transform completed")
-
-        logging.info(f"Started load")
-        loader.load(transformed_data, payload)
-        logging.info("load completed")
-        _update_status(True, "OK")
-    except Exception as err:
-        _update_status(False, str(err))
-
-
 default_args = {
     "owner": "airflow",
     "depends_on_past": False,
@@ -104,27 +44,26 @@ default_args = {
 }
 
 
-def generate_dag(data_source, hs_connection):
+def generate_dag(data_source: DataSource, hs_connection):
     system_name = sanitize_name(hs_connection.orchestration_system.name)
     workspace_name = sanitize_name(hs_connection.workspace_name)
-    ds_name = sanitize_name(data_source["name"])
+    ds_name = sanitize_name(data_source.name)
     dag_id = f"{ds_name}"
 
-    cron = data_source.get("crontab")
-    if cron:
-        schedule = cron
-    else:
-        interval = data_source.get("interval", 1)
-        unit = data_source.get("interval_units", "minutes")
-        schedule = timedelta(**{unit: interval})
+    @task()
+    def etl_task(payload_name: str):
+        data_source.load_data(payload_name)
 
-    start_ts = data_source.get("start_time")
-    start_dt = datetime.fromisoformat(start_ts) if start_ts else days_ago(1)
+    schedule = data_source.schedule
 
-    end_ts = data_source.get("end_time")
-    end_dt = datetime.fromisoformat(end_ts) if end_ts else None
+    start_dt = (
+        datetime.fromisoformat(st) if (st := schedule.start_time) else days_ago(1)
+    )
+    end_dt = datetime.fromisoformat(et) if (et := schedule.end_time) else None
 
-    is_paused = bool(data_source.get("paused", False))
+    schedule_str = schedule.crontab or timedelta(
+        **{schedule.interval_units: schedule.interval}
+    )
 
     @dag(
         dag_id=dag_id,
@@ -132,22 +71,18 @@ def generate_dag(data_source, hs_connection):
         start_date=start_dt,
         end_date=end_dt,
         max_active_runs=1,
-        schedule=schedule,
+        schedule=schedule_str,
         catchup=False,
         tags=["etl", f"{system_name}", f"{workspace_name}"],
-        params={"conn_id": hs_connection.conn_id, "datasource_id": data_source["uid"]},
-        is_paused_upon_creation=is_paused,
+        params={"conn_id": hs_connection.conn_id, "datasource_id": data_source.uid},
+        is_paused_upon_creation=bool(data_source.status.paused),
     )
-    def run_etl():
-        for payload in data_source["settings"]["payloads"]:
-            task_id = f"{sanitize_name(payload['name'])}"
-            extract_transform_load.override(task_id=task_id)(
-                data_source=data_source,
-                payload=payload,
-                conn_id=hs_connection.conn_id,
-            )
+    def dag_factory():
+        for payload in data_source.settings.payloads:
+            task_id = f"{sanitize_name(payload.name)}"
+            etl_task.override(task_id=task_id)(payload_name=payload.name)
 
-    return run_etl()
+    return dag_factory()
 
 
 session = settings.Session()
@@ -157,13 +92,17 @@ for conn in hs_conns:
     conn_id = conn.conn_id
     hs_connection = HydroServerAirflowConnection(conn_id)
     uid = str(hs_connection.orchestration_system.uid)
-    datasources = read_datasources_from_file(uid)
 
-    if not datasources:
+    data_sources = hs_connection.api.datasources.list(
+        orchestration_system=uid, fetch_all=True
+    ).items
+
+    if not data_sources:
         logging.warning(f"No datasources found for this orchestration system.")
         continue
 
-    for data_source in datasources:
+    for data_source in data_sources:
+        logging.info(f"datasource {data_source}")
         new_dag = generate_dag(data_source, hs_connection)
 
         # HydroServer's datasource.paused is the source of truth. Update current Airflow paused state
@@ -174,7 +113,7 @@ for conn in hs_conns:
             .filter(DagModel.dag_id == new_dag.dag_id)
             .first()
         )
-        desired_paused = bool(data_source.get("paused", False))
+        desired_paused = bool(data_source.status.paused)
         if dag_model and dag_model.is_paused != desired_paused:
             dag_model.set_is_paused(desired_paused)
 

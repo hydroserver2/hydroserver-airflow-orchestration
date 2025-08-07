@@ -3,7 +3,6 @@ import json
 from pathlib import Path
 import uuid
 from airflow.hooks.base import BaseHook
-import hydroserverpy
 import logging
 from utils.global_variables import OUTPUT_DIR
 from functools import cached_property
@@ -30,6 +29,8 @@ class HydroServerAirflowConnection:
     @cached_property
     def api(self):
         """Lazily connect the HydroServer API client."""
+        import hydroserverpy
+
         extras = self.extras
         conn = BaseHook.get_connection(self.conn_id)
 
@@ -54,12 +55,16 @@ class HydroServerAirflowConnection:
     def orchestration_system(self):
         system_name = str(self.extras["orchestration_system_name"])
         ws_list = self.api.workspaces.list(is_associated=True, fetch_all=True)
-        ws = next((w for w in ws_list.items if str(w.name) == self.workspace_name), None)
+        ws = next(
+            (w for w in ws_list.items if str(w.name) == self.workspace_name), None
+        )
         if not ws:
             raise RuntimeError(f"Workspace {self.workspace_name} not found")
 
         os_list = self.api.orchestrationsystems.list(workspace=ws, fetch_all=True)
-        orchestration_system = next((o for o in os_list.items if o.name == system_name), None)
+        orchestration_system = next(
+            (o for o in os_list.items if o.name == system_name), None
+        )
 
         if orchestration_system:
             logging.info(f"Found orchestration system {system_name}")
@@ -77,7 +82,9 @@ class HydroServerAirflowConnection:
     @cached_property
     def data_sources(self):
         return list(
-            self.api.datasources.list(orchestration_system=self.orchestration_system, fetch_all=True).items
+            self.api.datasources.list(
+                orchestration_system=self.orchestration_system, fetch_all=True
+            ).items
         )
 
     def save_data_sources_to_file(self):
