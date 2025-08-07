@@ -1,35 +1,13 @@
 from datetime import timedelta, datetime, timezone
 import logging
-from pathlib import Path
 import re
-from typing import Final
 
 from airflow import settings
-from utils.global_variables import OUTPUT_DIR
 from airflow.utils.dates import days_ago
 from airflow.decorators import dag, task
 from utils.hydroserver_airflow_connection import HydroServerAirflowConnection
 from airflow.models import Connection, DagModel
 from hydroserverpy.api.models.etl.data_source import DataSource
-
-LAST_RUN_MARKER: Final = Path(OUTPUT_DIR) / ".dags_last_generated"
-WINDOW_SECONDS: Final = 300  # 5 minutes
-
-
-def _last_run_recent() -> bool:
-    try:
-        ts = datetime.fromisoformat(LAST_RUN_MARKER.read_text())
-        return (datetime.now(timezone.utc) - ts).total_seconds() < WINDOW_SECONDS
-    except FileNotFoundError:
-        return False
-    except Exception as exc:
-        logging.warning("Could not read last-run marker: %s", exc)
-        return False
-
-
-def _touch_last_run_marker() -> None:
-    LAST_RUN_MARKER.parent.mkdir(parents=True, exist_ok=True)
-    LAST_RUN_MARKER.write_text(datetime.now(timezone.utc).isoformat())
 
 
 def sanitize_name(name: str) -> str:
@@ -88,50 +66,44 @@ def generate_dag(data_source: DataSource, hs):
     return dag_factory()
 
 
-if _last_run_recent():
-    logging.info(f"Skipping DAG generation – ran less than {WINDOW_SECONDS}s ago")
-else:
-    session = settings.Session()
-    hs_conns = session.query(Connection).all()
+session = settings.Session()
+hs_conns = session.query(Connection).all()
 
-    for conn in hs_conns:
-        hs = HydroServerAirflowConnection(conn.conn_id)
-        if hs.orchestration_system is None:
-            logging.info(
-                f"Found new orchestration system {system_name}. Registering..."
-            )
-            system_name = str(hs.extras["orchestration_system_name"])
-            hs.orchestrationsystems.create(
-                name=system_name,
-                workspace=hs.workspace,
-                orchestration_system_type="airflow",
-            )
-            logging.info(f"orchestration system {system_name} successfully Registered.")
-            continue  # If the orchestration system is new, theres's definitely no datastreams
+for conn in hs_conns:
+    hs = HydroServerAirflowConnection(conn.conn_id)
+    if hs.orchestration_system is None:
+        logging.info(f"Found new orchestration system {system_name}. Registering...")
+        system_name = str(hs.extras["orchestration_system_name"])
+        hs.orchestrationsystems.create(
+            name=system_name,
+            workspace=hs.workspace,
+            orchestration_system_type="airflow",
+        )
+        logging.info(f"orchestration system {system_name} successfully Registered.")
+        continue  # If the orchestration system is new, theres's definitely no datastreams
 
-        data_sources = hs.datasources.list(
-            orchestration_system=hs.orchestration_system, fetch_all=True
-        ).items
+    data_sources = hs.datasources.list(
+        orchestration_system=hs.orchestration_system, fetch_all=True
+    ).items
 
-        if not data_sources:
-            logging.warning(f"No datasources found for this orchestration system.")
-            continue
+    if not data_sources:
+        logging.warning(f"No datasources found for this orchestration system.")
+        continue
 
-        for data_source in data_sources:
-            logging.info(f"Generating DAG for datasource {data_source}")
-            new_dag = generate_dag(data_source, hs)
+    for data_source in data_sources:
+        logging.info(f"Generating DAG for datasource {data_source}")
+        new_dag = generate_dag(data_source, hs)
 
-            # HydroServer's datasource.status.paused is the source of truth. Update current Airflow paused state
-            # to match if the user has since changed the state somewhere else.
-            dag_model = (
-                settings.Session()
-                .query(DagModel)
-                .filter(DagModel.dag_id == new_dag.dag_id)
-                .first()
-            )
-            desired_paused = bool(data_source.status.paused)
-            if dag_model and dag_model.is_paused != desired_paused:
-                dag_model.set_is_paused(desired_paused)
+        # HydroServer's datasource.status.paused is the source of truth. Update current Airflow paused state
+        # to match if the user has since changed the state somewhere else.
+        dag_model = (
+            settings.Session()
+            .query(DagModel)
+            .filter(DagModel.dag_id == new_dag.dag_id)
+            .first()
+        )
+        desired_paused = bool(data_source.status.paused)
+        if dag_model and dag_model.is_paused != desired_paused:
+            dag_model.set_is_paused(desired_paused)
 
-            globals()[new_dag.dag_id] = new_dag
-    _touch_last_run_marker()
+        globals()[new_dag.dag_id] = new_dag
