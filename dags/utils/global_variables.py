@@ -1,1 +1,1 @@
-OUTPUT_DIR = "/opt/airflow/dags/orchestration_systems"
+OUTPUT_DIR = "/opt/airflow/dags/files"
