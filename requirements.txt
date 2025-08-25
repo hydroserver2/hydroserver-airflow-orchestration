@@ -1,4 +1,4 @@
 # CD_CD_pipeline.yaml will copy these requirements to the plugins/ directory 
 # of the Airflow instance where Airflow will install them automatically.
-hydroserverpy==1.3.0b2
+hydroserverpy==1.4.0b4
 redis<5
