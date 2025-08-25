@@ -42,13 +42,9 @@ class HydroServerAirflowConnection(HydroServer):
             raise RuntimeError(
                 "`workspace_name` missing from Airflow connection extras"
             )
-
+        workspaces = self.workspaces.list(is_associated=True, fetch_all=True).items
         ws = next(
-            (
-                w
-                for w in self.workspaces.list(is_associated=True, fetch_all=True).items
-                if str(w.name) == ws_name
-            ),
+            (w for w in workspaces if str(w.name) == ws_name),
             None,
         )
         if ws is None:

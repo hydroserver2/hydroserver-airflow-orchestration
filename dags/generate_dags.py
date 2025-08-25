@@ -5,9 +5,14 @@ import re
 from airflow import settings
 from airflow.utils.dates import days_ago
 from airflow.decorators import dag, task
+from airflow.models import Variable
 from utils.hydroserver_airflow_connection import HydroServerAirflowConnection
 from airflow.models import Connection, DagModel
 from hydroserverpy.api.models.etl.data_source import DataSource
+
+
+# --- Parse-time dependency so scheduler notices manual refresh bumps quickly ---
+_ = Variable.get("HS_REGEN_NONCE", default_var="")
 
 
 def sanitize_name(name: str) -> str:
@@ -72,8 +77,8 @@ hs_conns = session.query(Connection).all()
 for conn in hs_conns:
     hs = HydroServerAirflowConnection(conn.conn_id)
     if hs.orchestration_system is None:
-        logging.info(f"Found new orchestration system {system_name}. Registering...")
         system_name = str(hs.extras["orchestration_system_name"])
+        logging.info(f"Found new orchestration system {system_name}. Registering...")
         hs.orchestrationsystems.create(
             name=system_name,
             workspace=hs.workspace,
@@ -107,3 +112,38 @@ for conn in hs_conns:
             dag_model.set_is_paused(desired_paused)
 
         globals()[new_dag.dag_id] = new_dag
+
+
+def _nudge():
+    from airflow.models import Variable
+    from datetime import datetime, timezone
+    from airflow.configuration import conf
+    from pathlib import Path
+
+    now = datetime.now(timezone.utc).isoformat()
+    Variable.set("HS_REGEN_NONCE", now)
+    try:
+        Path(conf.get("core", "dags_folder")).joinpath(
+            "files/hs_regen.nonce"
+        ).write_text(now)
+    except Exception:
+        # If not shared/writable, the Variable bump is still fine—picked up on the next parse loop
+        pass
+
+
+@dag(
+    dag_id="manually_sync_datasources",
+    schedule=None,  # manual only
+    start_date=days_ago(1),
+    catchup=False,
+    tags=["admin", "hydroserver"],
+)
+def manually_regenerate_dags():
+    @task()
+    def nudge_scheduler():
+        _nudge()
+
+    nudge_scheduler()
+
+
+manually_regenerate_dags_dag = manually_regenerate_dags()
