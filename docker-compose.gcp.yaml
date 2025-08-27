@@ -14,6 +14,7 @@ x-airflow-common: &airflow-common
   environment: &airflow-common-env
     PYTHONPATH: /opt/airflow/hydroserverpy:/opt/airflow/dags
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    AIRFLOW__CORE__PARALLELISM: 8
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
     AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
