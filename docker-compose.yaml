@@ -79,6 +79,9 @@ services:
       retries: 5
       start_period: 30s
     restart: always
+    environment:
+      <<: *airflow-common-env
+      AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
     depends_on:
       <<: *airflow-common-depends-on
       airflow-init:
