@@ -96,7 +96,7 @@ for conn in hs_conns:
         continue
 
     for data_source in data_sources:
-        logging.info(f"Generating DAG for datasource {data_source}")
+        logging.info(f"Generating DAG for datasource {data_source.name}")
         new_dag = generate_dag(data_source, hs)
 
         # HydroServer's datasource.status.paused is the source of truth. Update current Airflow paused state
